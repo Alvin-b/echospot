@@ -14,6 +14,14 @@ export interface ChatMessage {
   senderId?: string;
 }
 
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  type: 'INFO' | 'SUCCESS' | 'ERROR' | 'WEBHOOK';
+  message: string;
+  details?: any;
+}
+
 export interface WifiPlan {
   name: string;
   speed: string;
