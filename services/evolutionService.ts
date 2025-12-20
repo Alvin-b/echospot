@@ -29,9 +29,16 @@ export class EvolutionService {
   }
 
   async getInstanceStatus() {
-    const response = await fetch('/api/instance/status');
-    if (!response.ok) throw new Error("Failed to fetch instance status");
-    return response.json();
+    try {
+      const response = await fetch('/api/instance/status');
+      // We expect the server to return 200 even on API errors so we can parse the JSON error
+      if (!response.ok) {
+         return { status: 'ERROR', message: `Server error: ${response.status}` };
+      }
+      return await response.json();
+    } catch (e) {
+      return { status: 'ERROR', message: "Dashboard could not reach the backend server." };
+    }
   }
 
   async sendBroadcast(message: string) {
@@ -44,13 +51,9 @@ export class EvolutionService {
     return response.json();
   }
 
-  // Frontend manual send (proxied through a new server endpoint if needed, but usually not used for auto-agent)
   async sendMessage(to: string, text: string) {
-     // For manual testing we use the same logic as the bot
      const config = await this.getConfig();
      if (!config) throw new Error("Not configured");
-     
-     // Note: We'd need an endpoint for manual sending if we wanted to support it fully from UI
      console.log("Manual send would go through server proxy to avoid CORS.");
   }
 }

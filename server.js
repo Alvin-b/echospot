@@ -26,26 +26,43 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     throw new Error("Evolution API not fully configured on server.");
   }
   
-  const baseUrl = evolutionConfig.baseUrl.replace(/\/$/, '');
+  let baseUrl = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
+  // Auto-prepend https if missing
+  if (!baseUrl.startsWith('http')) {
+    baseUrl = 'https://' + baseUrl;
+  }
+
   const cleanEndpoint = endpoint.replace(/^\//, '');
   const url = `${baseUrl}/${cleanEndpoint}`;
 
   console.log(`Evolution Proxy Request: ${method} ${url}`);
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': evolutionConfig.apiKey
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': evolutionConfig.apiKey
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(10000) // 10s timeout
+    });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Evolution API Error: ${response.status} - ${err}`);
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const errorMsg = data.message || data.error || `HTTP ${response.status}`;
+      const err = new Error(errorMsg);
+      err.status = response.status;
+      err.details = data;
+      throw err;
+    }
+
+    return data;
+  } catch (e) {
+    if (e.name === 'TimeoutError') throw new Error("Connection to Evolution API timed out.");
+    throw e;
   }
-  return response.json();
 }
 
 // --- AI Service Logic ---
@@ -118,23 +135,27 @@ app.post('/api/config', (req, res) => {
   res.json({ success: true });
 });
 
-// Instance Status Proxy - Improved for better connection detection
+// Instance Status Proxy
 app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig || !evolutionConfig.instanceName) {
-      return res.status(400).json({ status: "NOT_CONFIGURED", error: "Missing configuration" });
+      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Server configuration missing." });
     }
     
-    // Attempt to get instance state
     const data = await evolutionRequest(`instance/connectionStatus/${evolutionConfig.instanceName}`);
-    // Evolution API typically returns { instance: { state: "open" } } or similar
+    const state = data.instance?.state;
+
     res.json({ 
-      status: data.instance?.state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
+      status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
+      message: state === 'open' ? 'Instance is live and connected.' : `Instance state is "${state || 'unknown'}".`,
       raw: data 
     });
   } catch (e) {
     console.error("Status Check Error:", e.message);
-    res.status(500).json({ status: "ERROR", error: e.message });
+    res.status(200).json({ 
+      status: "ERROR", 
+      message: e.message || "Failed to communicate with Evolution API." 
+    });
   }
 });
 
@@ -157,23 +178,19 @@ app.post('/api/broadcast', async (req, res) => {
   }
 });
 
-// Webhook Sync - Robustly handles incoming messages and triggers AI replies
+// Webhook Sync
 app.post('/api/sync', async (req, res) => {
   try {
     const payload = req.body || {};
     const { event, data } = payload;
     
-    console.log(`Webhook Received: ${event}`);
-
     if (event === 'messages.upsert') {
       const message = data.messages?.[0];
-      // Only respond to incoming messages that are not from ourselves
       if (message && !message.key.fromMe) {
         const sender = message.key.remoteJid;
         const pushName = message.pushName || "Customer";
         const text = message.message?.conversation || message.message?.extendedTextMessage?.text;
 
-        // 1. Persist Contact
         const existingIdx = contacts.findIndex(c => c.jid === sender);
         if (existingIdx > -1) {
           contacts[existingIdx].lastInteraction = new Date();
@@ -188,7 +205,6 @@ app.post('/api/sync', async (req, res) => {
           });
         }
 
-        // 2. AI Logic & Response
         if (text && evolutionConfig) {
           const { text: aiResponse, isSerious } = await generateAIResponse([{ role: 'user', content: text }], maintenance);
           
@@ -204,23 +220,21 @@ app.post('/api/sync', async (req, res) => {
             });
           }
 
-          // Send reply via Evolution API Proxy
           try {
             await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
               number: sender.split('@')[0],
               text: aiResponse,
               linkPreview: true
             });
-            console.log(`Replied to ${sender}: ${aiResponse}`);
           } catch (err) {
-            console.error(`Failed to send reply to ${sender}:`, err.message);
+            console.error(`Reply failed to ${sender}:`, err.message);
           }
         }
       }
     }
     res.status(200).json({ status: 'success' });
   } catch (webhookErr) {
-    console.error("Webhook Processing Error:", webhookErr);
+    console.error("Webhook Error:", webhookErr);
     res.status(500).json({ status: 'error' });
   }
 });
@@ -233,5 +247,4 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`EcoSpot Server active on port ${PORT}`);
-  console.log(`Webhook Endpoint: http://localhost:${PORT}/api/sync (or your Render URL)`);
 });
