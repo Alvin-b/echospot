@@ -16,6 +16,12 @@ const EvolutionConfigComp: React.FC = () => {
   const [saveMsg, setSaveMsg] = useState('');
   const [testResult, setTestResult] = useState<{success: boolean, message: string} | null>(null);
 
+  // Debugging helpers for the user
+  const detectedKey = process.env.API_KEY || '';
+  const maskedKey = detectedKey 
+    ? `${detectedKey.substring(0, 4)}••••${detectedKey.substring(detectedKey.length - 4)}` 
+    : 'NOT FOUND';
+
   useEffect(() => {
     const saved = evolutionService.getConfig();
     if (saved) {
@@ -25,8 +31,7 @@ const EvolutionConfigComp: React.FC = () => {
       setStatus('disconnected');
     }
 
-    // Check if the key is present in the build bundle
-    const isKeySet = process.env.API_KEY && process.env.API_KEY !== "" && process.env.API_KEY !== "undefined";
+    const isKeySet = detectedKey && detectedKey !== "" && detectedKey !== "undefined";
     setGeminiStatus(isKeySet ? 'active' : 'missing');
   }, []);
 
@@ -54,7 +59,6 @@ const EvolutionConfigComp: React.FC = () => {
         [{ role: 'user', content: 'Say "Connection Successful"' }],
         []
       );
-      // If the response contains the 'Config Error' string we defined in the service, it failed
       const isFailed = response.text.includes("System Configuration Error") || response.text.includes("offline");
       
       setTestResult({ 
@@ -76,8 +80,60 @@ const EvolutionConfigComp: React.FC = () => {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-500">
-      {/* System Health Diagnostic */}
+    <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-500 pb-20">
+      
+      {/* 1. BUILD SYSTEM INSPECTOR - Helping verify Render Env Vars */}
+      <div className="bg-slate-900 rounded-[2.5rem] p-8 border border-slate-800 shadow-2xl overflow-hidden relative">
+        <div className="relative z-10">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-emerald-400 font-black text-xs uppercase tracking-widest flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              Live Build Manifest
+            </h3>
+            <span className="text-[9px] text-slate-500 font-mono">APP_VERSION: 1.0.4-stable</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="p-5 bg-white/5 rounded-2xl border border-white/10">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Detected AI Engine Key</p>
+              <div className="flex items-center justify-between">
+                <code className={`font-mono text-sm ${geminiStatus === 'active' ? 'text-emerald-300' : 'text-rose-400'}`}>
+                  {maskedKey}
+                </code>
+                <div className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${
+                  geminiStatus === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+                }`}>
+                  {geminiStatus === 'active' ? 'Injected' : 'Empty'}
+                </div>
+              </div>
+              {!detectedKey && (
+                <p className="text-[9px] text-rose-300 mt-3 leading-relaxed">
+                  ⚠️ <b>Variable Missing:</b> If you set this in Render recently, you must trigger a <b>Manual Deploy &rarr; Clear Cache</b> to inject it into the static build.
+                </p>
+              )}
+            </div>
+
+            <div className="p-5 bg-white/5 rounded-2xl border border-white/10">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Build Environment</p>
+              <div className="space-y-2">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-500">Target Origin:</span>
+                  <span className="text-slate-300 font-mono">{window.location.origin}</span>
+                </div>
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-500">Protocol:</span>
+                  <span className={`font-mono ${window.location.protocol === 'https:' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {window.location.protocol.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 bg-emerald-500/10 blur-[80px] rounded-full pointer-events-none"></div>
+      </div>
+
+      {/* 2. GEMINI HEALTH CHECK */}
       <div className={`rounded-[2.5rem] p-8 border ${
         geminiStatus === 'active' 
           ? 'bg-emerald-50 border-emerald-100' 
@@ -92,12 +148,12 @@ const EvolutionConfigComp: React.FC = () => {
             </div>
             <div>
               <h3 className={`text-lg font-black tracking-tight ${geminiStatus === 'active' ? 'text-emerald-900' : 'text-rose-900'}`}>
-                Gemini AI Engine Status: {geminiStatus === 'active' ? 'READY' : 'KEY NOT DETECTED'}
+                Gemini AI Engine: {geminiStatus === 'active' ? 'ONLINE' : 'OFFLINE'}
               </h3>
               <p className={`text-sm font-medium ${geminiStatus === 'active' ? 'text-emerald-700' : 'text-rose-700'}`}>
                 {geminiStatus === 'active' 
-                  ? 'Your system is fully connected to Google Generative AI.' 
-                  : 'The engine is currently offline. Follow the naming guide below.'}
+                  ? 'Key detected and builds verified.' 
+                  : 'The AI brain is missing. Check the Live Build Manifest above.'}
               </p>
             </div>
           </div>
@@ -110,34 +166,9 @@ const EvolutionConfigComp: React.FC = () => {
                 : 'bg-rose-600 text-white hover:bg-rose-700'
             }`}
           >
-            {geminiStatus === 'testing' ? 'Testing...' : 'Run Connection Test'}
+            {geminiStatus === 'testing' ? 'Testing...' : 'Run Live Test'}
           </button>
         </div>
-
-        {geminiStatus === 'missing' && (
-          <div className="mt-6 p-6 bg-white/60 rounded-3xl border border-rose-200">
-            <h4 className="text-xs font-black text-rose-900 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <span className="flex h-2 w-2 rounded-full bg-rose-500"></span>
-              Why is my key not showing?
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <p className="text-[10px] font-bold text-rose-800 uppercase tracking-tight">1. Naming Conflict</p>
-                <p className="text-[10px] text-rose-700 leading-relaxed">
-                  You might have named your variable <code className="bg-rose-100 px-1 rounded">GEMINI_API_KEY</code>. 
-                  In Render, please rename it to exactly <code className="bg-rose-100 font-black px-1 rounded">API_KEY</code>.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <p className="text-[10px] font-bold text-rose-800 uppercase tracking-tight">2. Static Site Deployment</p>
-                <p className="text-[10px] text-rose-700 leading-relaxed">
-                  Variables are injected during the <b>Build</b>. After saving your key in Render, you <b>MUST</b> go to "Deploy" and select <b>"Manual Deploy &rarr; Clear Cache & Deploy"</b>.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
         {testResult && (
           <div className={`mt-6 p-4 rounded-xl text-xs font-mono border ${
             testResult.success ? 'bg-white/50 border-emerald-200 text-emerald-800' : 'bg-white/50 border-rose-200 text-rose-800'
@@ -147,20 +178,21 @@ const EvolutionConfigComp: React.FC = () => {
         )}
       </div>
 
+      {/* 3. EVOLUTION CONFIGURATION */}
       <div className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-xl shadow-slate-200/50">
         <div className="flex items-center justify-between mb-10">
           <div>
-            <h2 className="text-3xl font-black text-slate-800 tracking-tight">API Infrastructure</h2>
-            <p className="text-slate-500 text-sm mt-1">Connect your Evolution instance to the EcoSpot AI Engine.</p>
+            <h2 className="text-3xl font-black text-slate-800 tracking-tight">Evolution Bridge</h2>
+            <p className="text-slate-500 text-sm mt-1">Direct link to your WhatsApp Instance.</p>
           </div>
           <div className={`px-5 py-2 rounded-2xl text-[11px] font-black uppercase tracking-widest border flex items-center gap-2 ${
             status === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 
             status === 'loading' ? 'bg-slate-50 text-slate-400 border-slate-200 animate-pulse' : 
-            status === 'error' ? 'bg-red-50 text-red-700 border-red-200' :
+            status === 'error' ? 'bg-rose-50 text-rose-700 border-rose-200' :
             'bg-slate-50 text-slate-400 border-slate-200'
           }`}>
-            <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-500' : status === 'error' ? 'bg-red-500' : 'bg-slate-300'}`}></span>
-            {status === 'connected' ? 'Evolution Linked' : status === 'loading' ? 'Syncing...' : status === 'error' ? 'Sync Failed' : 'Disconnected'}
+            <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-500' : status === 'error' ? 'bg-rose-500' : 'bg-slate-300'}`}></span>
+            {status === 'connected' ? 'Connected' : status === 'loading' ? 'Checking...' : status === 'error' ? 'CORS Blocked' : 'Disconnected'}
           </div>
         </div>
 
@@ -171,25 +203,35 @@ const EvolutionConfigComp: React.FC = () => {
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
               </div>
               <div className="flex-1">
-                <h4 className="text-sm font-black text-rose-900 uppercase tracking-widest mb-3">CRITICAL: Connection Blocked by Evolution Server</h4>
+                <h4 className="text-sm font-black text-rose-900 uppercase tracking-widest mb-3">Evolution Server Action Required</h4>
                 <p className="text-xs text-rose-800 font-medium mb-6 leading-relaxed">
-                  The request to <span className="font-mono bg-rose-100 px-1 rounded">{config.baseUrl}</span> was rejected. 
-                  This is usually a <b>CORS security policy</b> restriction on your Evolution API instance.
+                  Your browser is blocking the request to <span className="font-mono bg-rose-100 px-1 rounded">{config.baseUrl}</span>. 
+                  This is nearly always because the Evolution API server has a restrictive security policy.
                 </p>
                 
                 <div className="bg-white/60 p-6 rounded-3xl border border-rose-200 space-y-4">
-                  <p className="text-[10px] font-black text-rose-900 uppercase tracking-widest">Required Evolution API Configuration:</p>
+                  <p className="text-[10px] font-black text-rose-900 uppercase tracking-widest">Update Evolution Environment (.env or Docker):</p>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-rose-100">
-                      <code className="text-[11px] font-mono text-rose-700">CORS_ORIGIN</code>
-                      <code className="text-[11px] font-mono font-black text-emerald-600">*</code>
+                      <code className="text-[10.5px] font-mono text-rose-700">CORS_ORIGIN</code>
+                      <code className="text-[10.5px] font-mono font-black text-emerald-600">*</code>
                     </div>
                     <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-rose-100">
-                      <code className="text-[11px] font-mono text-rose-700">CORS_METHODS</code>
-                      <code className="text-[11px] font-mono font-black text-emerald-600">GET,POST,PUT,DELETE,PATCH,OPTIONS</code>
+                      <code className="text-[10.5px] font-mono text-rose-700">CORS_METHODS</code>
+                      <code className="text-[10.5px] font-mono font-black text-emerald-600">GET,POST,PUT,DELETE,PATCH,OPTIONS</code>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-rose-100">
+                      <code className="text-[10.5px] font-mono text-rose-700">CORS_HEADERS</code>
+                      <code className="text-[10.5px] font-mono font-black text-emerald-600">Content-Type,Authorization,apikey</code>
                     </div>
                   </div>
-                  <p className="text-[9px] text-rose-600 italic">Note: After updating these variables in your Evolution environment (e.g., Docker Compose or .env), you <b>must</b> restart the Evolution instance.</p>
+                  <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
+                    <p className="text-[10px] text-amber-900 font-bold mb-1 uppercase tracking-tight">Mixed Content Warning:</p>
+                    <p className="text-[10px] text-amber-800 leading-tight">
+                      Since your dashboard is on <b>HTTPS</b>, you <b>must</b> use an <code className="font-bold">https://</code> Evolution URL. 
+                      Browsers block calls from Secure to Insecure (HTTP) sites automatically.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -248,74 +290,28 @@ const EvolutionConfigComp: React.FC = () => {
                 <li className="flex gap-4">
                    <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-600 text-xs font-black shrink-0">1</div>
                    <div>
-                      <p className="text-xs text-slate-900 font-bold mb-1">Evolution API</p>
-                      <p className="text-[10px] text-slate-500 leading-relaxed">This handles WhatsApp connections. Paste your server URL and API key above.</p>
+                      <p className="text-xs text-slate-900 font-bold mb-1">CORS & Preflight</p>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">Browsers send an OPTIONS request before the real one. If your server isn't configured for it, it fails.</p>
                    </div>
                 </li>
                 <li className="flex gap-4">
                    <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-600 text-xs font-black shrink-0">2</div>
                    <div>
-                      <p className="text-xs text-slate-900 font-bold mb-1">Gemini AI Engine</p>
-                      <p className="text-[10px] text-slate-500 leading-relaxed">This handles the actual brain of the bot. It requires a system environment variable named <b>API_KEY</b>.</p>
+                      <p className="text-xs text-slate-900 font-bold mb-1">Global Key vs Instance Key</p>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">Ensure you use the <b>Global API Key</b> found in your Evolution dashboard for status checks.</p>
                    </div>
                 </li>
              </ul>
              
-             <div className="mt-8 p-6 bg-amber-50 border border-amber-100 rounded-3xl">
-                <p className="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-2 flex items-center gap-2">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                  Network Hint
+             <div className="mt-8 p-6 bg-emerald-900 rounded-3xl text-white">
+                <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-2 flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                  Success Tip
                 </p>
-                <p className="text-[10px] text-amber-700 leading-relaxed font-medium">
-                  Ensure your Evolution URL includes the protocol (e.g. <b>https://</b>). If you are using a self-signed SSL, the browser might block it until you visit the URL directly once.
+                <p className="text-[10px] text-emerald-100/70 leading-relaxed font-medium">
+                  If CORS settings are correct but still failing, try opening your Evolution URL in a new browser tab. 
+                  If it asks for a certificate or security bypass, you must accept it before the dashboard can connect.
                 </p>
-             </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Deep Dive Setup Guide */}
-      <div className="bg-slate-900 rounded-[3rem] p-12 text-white relative overflow-hidden shadow-2xl">
-        <h3 className="text-3xl font-black mb-8 tracking-tight">How to Set Your Gemini API Key</h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-10 relative z-10">
-          <div className="space-y-8">
-            <div className="p-6 bg-white/5 border border-white/10 rounded-2xl">
-              <h4 className="text-emerald-400 font-black text-xs uppercase tracking-widest mb-4">Option 1: For Render.com</h4>
-              <ol className="text-xs space-y-3 text-slate-300">
-                <li>1. Open your <b>Static Site</b> dashboard on Render.</li>
-                <li>2. Go to the <b>Environment</b> tab in the sidebar.</li>
-                <li>3. Click <b>Add Environment Variable</b>.</li>
-                <li>4. Key: <code className="bg-emerald-500/20 px-2 py-0.5 rounded text-emerald-300 font-mono">API_KEY</code></li>
-                <li>5. Value: <span className="text-slate-500 italic">Your Gemini API Secret</span></li>
-                <li>6. <b>Save</b> and trigger a <b>Manual Deploy (Clear Cache)</b>.</li>
-              </ol>
-            </div>
-            
-            <div className="p-6 bg-white/5 border border-white/10 rounded-2xl">
-              <h4 className="text-emerald-400 font-black text-xs uppercase tracking-widest mb-4">Option 2: Local Development</h4>
-              <p className="text-xs text-slate-300 mb-4">Create a file named <code className="text-emerald-300">.env</code> in your project root:</p>
-              <div className="bg-black/40 p-3 rounded font-mono text-[10px] text-emerald-500 border border-white/5">
-                API_KEY=your_secret_key_here
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-col justify-center">
-             <div className="bg-emerald-600 rounded-3xl p-8 shadow-2xl shadow-emerald-600/20">
-                <h4 className="font-black mb-4">Why is this required?</h4>
-                <p className="text-sm text-emerald-50 font-medium leading-relaxed mb-6">
-                  To keep your ISP data secure, the EcoSpot Engine does not store keys in the browser's database. 
-                  Instead, it pulls them from the secure server environment where the app is hosted.
-                </p>
-                <a 
-                  href="https://aistudio.google.com/app/apikey" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="inline-block bg-white text-emerald-900 px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-emerald-50 transition-all"
-                >
-                  Get New Gemini Key →
-                </a>
              </div>
           </div>
         </div>
