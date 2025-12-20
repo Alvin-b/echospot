@@ -198,7 +198,7 @@ const Dashboard: React.FC = () => {
                 <div className="flex gap-4">
                    <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black shrink-0">1</div>
                    <p className="text-xs text-slate-400 leading-relaxed">
-                     Go to your <b>Evolution Manager</b> -> Instances -> (Your Instance) -> <b>Webhook</b>.
+                     Go to your <b>Evolution Manager</b> → Instances → (Your Instance) → <b>Webhook</b>.
                    </p>
                 </div>
                 <div className="flex gap-4">
