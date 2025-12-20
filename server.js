@@ -95,9 +95,44 @@ app.get('/api/instance/status', async (req, res) => {
   }
 });
 
+// Endpoint to simulate a webhook event for testing purposes
+app.post('/api/test-webhook', async (req, res) => {
+  const mockPayload = {
+    event: "messages.upsert",
+    instance: evolutionConfig?.instanceName || "test-instance",
+    data: {
+      key: {
+        remoteJid: "254700000000@s.whatsapp.net",
+        fromMe: false,
+        id: "SIMULATED_" + Date.now()
+      },
+      pushName: "Test User",
+      message: {
+        conversation: req.body.text || "Hello EcoSpot"
+      },
+      messageTimestamp: Math.floor(Date.now() / 1000)
+    }
+  };
+  
+  addLog('INFO', 'Simulating webhook event...');
+  // We call our own sync endpoint
+  const response = await fetch(`http://localhost:${PORT}/api/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mockPayload)
+  });
+  
+  res.json({ success: response.ok, status: response.status });
+});
+
 app.post('/api/sync', async (req, res) => {
   const payload = req.body || {};
-  addLog('WEBHOOK', `Received: ${payload.event || 'Unknown Event'}`, payload);
+  const contentType = req.headers['content-type'];
+  
+  addLog('WEBHOOK', `Event: ${payload.event || 'Unknown'} | Content-Type: ${contentType}`, {
+    headers: req.headers,
+    body: payload
+  });
 
   if (!evolutionConfig) {
     addLog('ERROR', 'Discarded webhook: Evolution API not configured on server.');
@@ -105,17 +140,26 @@ app.post('/api/sync', async (req, res) => {
   }
 
   if (payload.event === 'messages.upsert') {
+    // Try both nested and flat message structures used by different Evolution versions
     const message = (payload.data?.messages ? payload.data.messages[0] : payload.data) || {};
-    if (!message.key || message.key.fromMe) {
-      addLog('INFO', 'Skipped: Message is from me or empty.');
+    
+    if (!message.key) {
+      addLog('ERROR', 'Malformed payload: Missing "key" object in message data.', payload);
+      return res.status(200).send('MALFORMED');
+    }
+
+    if (message.key.fromMe) {
+      addLog('INFO', 'Skipped: Message sent from the bot itself.');
       return res.status(200).send('SKIPPED');
     }
 
     const sender = message.key.remoteJid;
-    const text = message.message?.conversation || message.message?.extendedTextMessage?.text;
+    const text = message.message?.conversation || 
+                 message.message?.extendedTextMessage?.text || 
+                 message.message?.imageMessage?.caption;
 
     if (!text) {
-      addLog('INFO', `Skipped: Message from ${sender} has no text (maybe an image/audio without caption).`);
+      addLog('INFO', `Skipped: No readable text content from ${sender}. (Media message without caption?)`);
       return res.status(200).send('NO_TEXT');
     }
 
@@ -134,13 +178,13 @@ app.post('/api/sync', async (req, res) => {
       });
 
       if (response.ok) {
-        addLog('SUCCESS', `Replied to ${sender} with AI content.`);
+        addLog('SUCCESS', `Replied to ${sender} successfully.`);
       } else {
         const errData = await response.text();
-        addLog('ERROR', `Failed to send reply. API responded: ${response.status}`, errData);
+        addLog('ERROR', `Failed to reply. Evolution API status: ${response.status}`, errData);
       }
     } catch (e) {
-      addLog('ERROR', `Error sending reply: ${e.message}`);
+      addLog('ERROR', `Network error while replying to ${sender}: ${e.message}`);
     }
   }
   res.status(200).send('OK');
@@ -152,4 +196,4 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => addLog('INFO', `Server active on port ${PORT}`));
+app.listen(PORT, () => addLog('INFO', `Server logic initialized. Monitoring port ${PORT}...`));

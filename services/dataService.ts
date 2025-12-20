@@ -27,6 +27,11 @@ export class DataService {
 
   async getDashboardData() { return this.request('/api/data'); }
   async getLogs(): Promise<LogEntry[]> { return await this.request('/api/logs') || []; }
+  
+  async testWebhook(text: string) {
+    return this.request('/api/test-webhook', 'POST', { text });
+  }
+
   async saveMaintenanceRecord(record: MaintenanceRecord) {
     const records = await this.getMaintenanceRecords();
     records.push(record);
