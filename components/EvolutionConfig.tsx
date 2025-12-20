@@ -10,7 +10,8 @@ const EvolutionConfigComp: React.FC = () => {
     apiKey: '',
     instanceName: ''
   });
-  const [status, setStatus] = useState<'connected' | 'disconnected' | 'loading'>('loading');
+  const [status, setStatus] = useState<'connected' | 'disconnected' | 'loading' | 'error'>('loading');
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [geminiStatus, setGeminiStatus] = useState<'active' | 'missing' | 'testing'>('missing');
   const [saveMsg, setSaveMsg] = useState('');
   const [testResult, setTestResult] = useState<{success: boolean, message: string} | null>(null);
@@ -24,13 +25,13 @@ const EvolutionConfigComp: React.FC = () => {
       setStatus('disconnected');
     }
 
-    // Check Gemini Key presence
     const isKeySet = process.env.API_KEY && process.env.API_KEY !== "undefined";
     setGeminiStatus(isKeySet ? 'active' : 'missing');
   }, []);
 
   const checkStatus = async () => {
     setStatus('loading');
+    setErrorDetails(null);
     try {
       const res = await evolutionService.getInstanceStatus();
       if (res.instance.state === 'open') {
@@ -38,8 +39,10 @@ const EvolutionConfigComp: React.FC = () => {
       } else {
         setStatus('disconnected');
       }
-    } catch (e) {
-      setStatus('disconnected');
+    } catch (e: any) {
+      console.error("Evolution Config Status Error:", e);
+      setStatus('error');
+      setErrorDetails(e.message);
     }
   };
 
@@ -51,7 +54,7 @@ const EvolutionConfigComp: React.FC = () => {
         []
       );
       setTestResult({ 
-        success: !response.text.includes("offline"), 
+        success: !response.text.includes("offline") && !response.text.includes("Error"), 
         message: response.text 
       });
       setGeminiStatus('active');
@@ -121,13 +124,29 @@ const EvolutionConfigComp: React.FC = () => {
             <h2 className="text-3xl font-black text-slate-800 tracking-tight">API Infrastructure</h2>
             <p className="text-slate-500 text-sm mt-1">Connect your Evolution instance to the EcoSpot AI Engine.</p>
           </div>
-          <div className={`px-5 py-2 rounded-2xl text-[11px] font-black uppercase tracking-widest border ${
+          <div className={`px-5 py-2 rounded-2xl text-[11px] font-black uppercase tracking-widest border flex items-center gap-2 ${
             status === 'connected' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 
-            status === 'loading' ? 'bg-slate-50 text-slate-400 border-slate-200 animate-pulse' : 'bg-red-50 text-red-700 border-red-200'
+            status === 'loading' ? 'bg-slate-50 text-slate-400 border-slate-200 animate-pulse' : 
+            status === 'error' ? 'bg-red-50 text-red-700 border-red-200' :
+            'bg-slate-50 text-slate-400 border-slate-200'
           }`}>
-            {status === 'connected' ? '● Evolution Linked' : status === 'loading' ? 'Syncing...' : '● Evolution Disconnected'}
+            <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-500' : status === 'error' ? 'bg-red-500' : 'bg-slate-300'}`}></span>
+            {status === 'connected' ? 'Evolution Linked' : status === 'loading' ? 'Syncing...' : status === 'error' ? 'Sync Failed' : 'Disconnected'}
           </div>
         </div>
+
+        {status === 'error' && (
+          <div className="mb-8 p-6 bg-red-50 border border-red-100 rounded-3xl">
+            <h4 className="text-xs font-black text-red-800 uppercase tracking-widest mb-2 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+              Connection Diagnostics
+            </h4>
+            <p className="text-xs text-red-700 font-medium mb-4">{errorDetails}</p>
+            <div className="bg-white/50 p-4 rounded-xl border border-red-100 text-[10px] text-red-900 font-mono">
+              PRO TIP: Most "Failed to fetch" errors are caused by CORS. Ensure your Evolution API has <b>CORS_ORIGIN=*</b> or <b>CORS_ORIGIN={window.location.origin}</b> set in its environment variables.
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
           <div className="space-y-6">
@@ -194,14 +213,14 @@ const EvolutionConfigComp: React.FC = () => {
                 </li>
              </ul>
              
-             <div className="mt-auto pt-8 border-t border-slate-200/50">
-                <div className="bg-slate-900 rounded-[1.5rem] p-5 text-white flex items-center gap-4">
-                   <div className="text-2xl">⚡</div>
-                   <div>
-                      <p className="text-[10px] font-black uppercase text-emerald-400 tracking-widest">Performance</p>
-                      <p className="text-[9px] text-slate-400 font-medium">Flash-3 model used for sub-second responses.</p>
-                   </div>
-                </div>
+             <div className="mt-8 p-5 bg-amber-50 border border-amber-100 rounded-2xl">
+                <p className="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-1">Critical: Troubleshooting Error Status</p>
+                <p className="text-[10px] text-amber-700 leading-relaxed font-medium">
+                  If status shows "Sync Failed", ensure your Evolution API server has:
+                  <br/><code className="bg-white/50 px-1 rounded">CORS_ORIGIN=*</code>
+                  <br/><code className="bg-white/50 px-1 rounded">CORS_METHODS=GET,POST,OPTIONS</code>
+                  <br/>set in the <code className="italic">.env</code> or Docker config.
+                </p>
              </div>
           </div>
         </div>

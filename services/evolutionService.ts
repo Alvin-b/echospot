@@ -10,16 +10,25 @@ export class EvolutionService {
   }
 
   setConfig(config: EvolutionConfig) {
-    this.config = config;
-    localStorage.setItem('evolution_config', JSON.stringify(config));
+    // Ensure URL doesn't have a trailing slash for consistent joining
+    const sanitizedConfig = {
+      ...config,
+      baseUrl: config.baseUrl.trim().replace(/\/$/, '')
+    };
+    this.config = sanitizedConfig;
+    localStorage.setItem('evolution_config', JSON.stringify(sanitizedConfig));
   }
 
   getConfig(): EvolutionConfig | null {
     if (this.config) return this.config;
     const saved = localStorage.getItem('evolution_config');
     if (saved) {
-      this.config = JSON.parse(saved);
-      return this.config;
+      try {
+        this.config = JSON.parse(saved);
+        return this.config;
+      } catch (e) {
+        return null;
+      }
     }
     return null;
   }
@@ -70,24 +79,36 @@ export class EvolutionService {
 
   private async request(endpoint: string, method: string = 'GET', body?: any) {
     const config = this.getConfig();
-    if (!config) throw new Error("Evolution API not configured");
+    if (!config || !config.baseUrl) throw new Error("Evolution API not configured");
 
-    const url = `${config.baseUrl}/${endpoint}`.replace(/([^:]\/)\/+/g, "$1");
-    const response = await fetch(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': config.apiKey
-      },
-      body: body ? JSON.stringify(body) : undefined
-    });
+    // Cleanly join base URL and endpoint
+    const url = `${config.baseUrl}/${endpoint.replace(/^\//, '')}`;
+    
+    try {
+      const response = await fetch(url, {
+        method,
+        mode: 'cors', // Explicitly request CORS
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.apiKey
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.message || `HTTP ${response.status}`);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      return response.json();
+    } catch (error: any) {
+      console.error(`Evolution Request Failed [${method} ${endpoint}]:`, error.message);
+      // If the error message is "Failed to fetch", it's almost certainly a CORS or SSL issue.
+      if (error.message === 'Failed to fetch') {
+        throw new Error("CORS_OR_NETWORK_ERROR: The Evolution API server rejected the request or is unreachable. Check your CORS settings.");
+      }
+      throw error;
     }
-
-    return response.json();
   }
 
   async getInstanceStatus() {
@@ -99,7 +120,6 @@ export class EvolutionService {
   async fetchMessages() {
     const config = this.getConfig();
     if (!config?.instanceName) return { messages: [] };
-    // We poll for unread messages as a webhook substitute
     return this.request(`chat/findMessages/${config.instanceName}`, 'POST', {
       read: false
     });
@@ -109,7 +129,6 @@ export class EvolutionService {
     const config = this.getConfig();
     if (!config?.instanceName) return;
     
-    // Ensure the number is formatted correctly for Evolution
     const number = to.split('@')[0];
 
     return this.request(`message/sendText/${config.instanceName}`, 'POST', {

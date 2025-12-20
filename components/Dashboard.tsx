@@ -8,7 +8,8 @@ import { geminiService } from '../services/geminiService';
 
 const Dashboard: React.FC = () => {
   const [isLive, setIsLive] = useState(false);
-  const [status, setStatus] = useState<'online' | 'offline' | 'error'>('offline');
+  const [status, setStatus] = useState<'online' | 'offline' | 'error' | 'loading'>('offline');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [processedCount, setProcessedCount] = useState(0);
   const [recentTraffic, setRecentTraffic] = useState<{from: string, text: string, time: Date}[]>([]);
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -23,19 +24,24 @@ const Dashboard: React.FC = () => {
     let interval: any;
     if (isLive) {
       checkInstance();
-      interval = setInterval(handleAutoReplyCycle, 4000);
+      interval = setInterval(handleAutoReplyCycle, 5000); // 5s interval for safety
     } else {
       setStatus('offline');
+      setErrorMsg(null);
     }
     return () => clearInterval(interval);
   }, [isLive]);
 
   const checkInstance = async () => {
+    setStatus('loading');
     try {
       const res = await evolutionService.getInstanceStatus();
       setStatus(res.instance.state === 'open' ? 'online' : 'offline');
-    } catch (e) {
+      setErrorMsg(null);
+    } catch (e: any) {
+      console.error("Dashboard Status Check Error:", e);
       setStatus('error');
+      setErrorMsg(e.message || "Unknown Connection Error");
     }
   };
 
@@ -134,12 +140,28 @@ const Dashboard: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-8">
                 <h3 className="font-black text-slate-800 uppercase tracking-widest text-[11px]">Instance Status</h3>
-                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter shadow-sm ${status === 'online' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter shadow-sm ${
+                  status === 'online' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 
+                  status === 'error' ? 'bg-red-50 text-red-600 border border-red-100' :
+                  status === 'loading' ? 'bg-slate-50 text-slate-400 border border-slate-100 animate-pulse' :
+                  'bg-slate-50 text-slate-400 border border-slate-100'
+                }`}>
                   {status}
                 </span>
               </div>
               
               <div className="space-y-4">
+                {status === 'error' && (
+                  <div className="p-4 bg-red-50 rounded-2xl border border-red-100 mb-2">
+                    <p className="text-[9px] font-black text-red-700 uppercase tracking-widest mb-1">Last Error</p>
+                    <p className="text-[10px] text-red-600 font-medium leading-tight">
+                      {errorMsg?.includes('CORS') 
+                        ? 'CORS Error: Evolution API rejected the connection from this domain. Check settings.' 
+                        : errorMsg}
+                    </p>
+                    <Link to="/settings" className="inline-block mt-2 text-[9px] font-black text-red-800 underline uppercase tracking-widest">Fix in Settings →</Link>
+                  </div>
+                )}
                 <div className="p-5 bg-slate-50 rounded-2xl border border-slate-100">
                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Contacts in Memory</p>
                   <p className="text-3xl font-black text-slate-900 tracking-tight">{evolutionService.getContacts().length}</p>
