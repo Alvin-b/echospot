@@ -1,0 +1,13 @@
+services:
+  - type: static
+    name: ecospot-isp-agent
+    env: static
+    buildCommand: null # No build command needed for this ESM structure
+    publishPath: .
+    envVars:
+      - key: API_KEY
+        sync: false # User must set this in Render Dashboard
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
