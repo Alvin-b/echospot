@@ -13,12 +13,14 @@ const EvolutionConfigComp: React.FC = () => {
   const [status, setStatus] = useState<'IDLE' | 'CHECKING' | 'CONNECTED' | 'ERROR' | 'DISCONNECTED' | 'NOT_CONFIGURED'>('IDLE');
   const [errorMessage, setErrorMessage] = useState('');
   const [attemptedUrl, setAttemptedUrl] = useState('');
+  const [rawResponse, setRawResponse] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
 
   const checkConnection = async () => {
     setStatus('CHECKING');
     setErrorMessage('');
     setAttemptedUrl('');
+    setRawResponse('');
     
     const result = await evolutionService.getInstanceStatus();
     
@@ -28,11 +30,12 @@ const EvolutionConfigComp: React.FC = () => {
       setStatus('NOT_CONFIGURED');
     } else if (result.status === 'DISCONNECTED') {
       setStatus('DISCONNECTED');
-      setErrorMessage(result.message || 'Instance found but not connected (ensure it is "open").');
+      setErrorMessage(result.message || 'Connected to API, but instance is not "open".');
     } else {
       setStatus('ERROR');
       setErrorMessage(result.message || 'An unexpected error occurred.');
       if (result.url) setAttemptedUrl(result.url);
+      if (result.raw) setRawResponse(typeof result.raw === 'string' ? result.raw : JSON.stringify(result.raw, null, 2));
     }
   };
 
@@ -76,14 +79,12 @@ const EvolutionConfigComp: React.FC = () => {
             status === 'CONNECTED' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
             status === 'CHECKING' ? 'bg-slate-50 text-slate-500 border-slate-100' :
             status === 'NOT_CONFIGURED' ? 'bg-slate-50 text-slate-300 border-slate-100' :
-            status === 'IDLE' ? 'bg-slate-50 text-slate-400 border-slate-100' :
             'bg-rose-50 text-rose-600 border-rose-100'
           }`}>
             <span className={`w-2 h-2 rounded-full ${
               status === 'CONNECTED' ? 'bg-emerald-500 animate-pulse' :
               status === 'CHECKING' ? 'bg-slate-400 animate-spin border-t-transparent border-2' :
               status === 'NOT_CONFIGURED' ? 'bg-slate-200' :
-              status === 'IDLE' ? 'bg-slate-300' :
               'bg-rose-500'
             }`}></span>
             {status.replace('_', ' ')}
@@ -95,23 +96,24 @@ const EvolutionConfigComp: React.FC = () => {
 
         <div className="space-y-6">
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Evolution Endpoint URL</label>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Evolution Base URL</label>
             <input 
               type="text" 
               value={config.baseUrl}
               onChange={(e) => setConfig({...config, baseUrl: e.target.value})}
-              placeholder="e.g. evolution.myserver.com"
-              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
+              placeholder="e.g. https://evolution.cloudfy.live"
+              className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
             />
+            <p className="text-[9px] text-slate-400 pl-2">Do not add /instance/status to this field. Just the base domain.</p>
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Evolution API Key</label>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Global API Key</label>
             <input 
               type="password" 
               value={config.apiKey}
               onChange={(e) => setConfig({...config, apiKey: e.target.value})}
-              placeholder="Global API Key"
+              placeholder="Your Global API Key (apikey)"
               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
             />
           </div>
@@ -122,7 +124,7 @@ const EvolutionConfigComp: React.FC = () => {
               type="text" 
               value={config.instanceName}
               onChange={(e) => setConfig({...config, instanceName: e.target.value})}
-              placeholder="e.g. EcoSpot_Instance"
+              placeholder="e.g. echospot"
               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
             />
           </div>
@@ -138,18 +140,25 @@ const EvolutionConfigComp: React.FC = () => {
             
             {errorMessage && (
               <div className="p-5 bg-rose-50 border border-rose-100 rounded-2xl animate-in slide-in-from-top-2">
-                <div className="flex items-center gap-2 text-rose-700 mb-2">
+                <div className="flex items-center gap-2 text-rose-700 mb-3">
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
                   <p className="text-xs font-black uppercase tracking-wider">Connection Failure</p>
                 </div>
-                <p className="text-[11px] text-rose-600/90 leading-relaxed font-medium">{errorMessage}</p>
+                <p className="text-[11px] text-rose-600/90 leading-relaxed font-medium mb-3">{errorMessage}</p>
+                
                 {attemptedUrl && (
-                  <div className="mt-3 p-2 bg-white/50 rounded-lg">
-                    <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1">Attempted Backend URL:</p>
-                    <p className="text-[10px] font-mono text-rose-700 break-all bg-white p-1 rounded border border-rose-100">{attemptedUrl}</p>
+                  <div className="mb-3">
+                    <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1">Attempted URL:</p>
+                    <p className="text-[9px] font-mono text-rose-700 break-all bg-white/50 p-2 rounded border border-rose-100">{attemptedUrl}</p>
                   </div>
                 )}
-                <p className="text-[9px] text-rose-400 mt-2 italic font-mono uppercase tracking-tighter">If the URL above looks wrong, check your Base URL input.</p>
+
+                {rawResponse && (
+                  <div className="max-h-40 overflow-y-auto">
+                    <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1">Raw Server Response:</p>
+                    <pre className="text-[9px] font-mono text-slate-600 bg-white p-2 rounded border border-slate-200 whitespace-pre-wrap">{rawResponse}</pre>
+                  </div>
+                )}
               </div>
             )}
             
@@ -159,19 +168,19 @@ const EvolutionConfigComp: React.FC = () => {
       </div>
 
       <div className="bg-slate-900 rounded-[2.5rem] p-8 text-white">
-        <h3 className="font-bold text-lg mb-4">Instance Health Checklist</h3>
-        <ul className="space-y-3 text-xs text-slate-400">
+        <h3 className="font-bold text-lg mb-4">Connection Tips</h3>
+        <ul className="space-y-4 text-xs text-slate-400">
           <li className="flex gap-3">
-             <span className="text-emerald-500">✔</span>
-             <span>Evolution API URL must be reachable from your backend server.</span>
+             <span className="text-emerald-500">1.</span>
+             <span>Your instance <b>"{config.instanceName || 'echospot'}"</b> must be created first (as you did in your curl).</span>
           </li>
           <li className="flex gap-3">
-             <span className="text-emerald-500">✔</span>
-             <span>Your WhatsApp session must be <b>Connected (Open)</b>.</span>
+             <span className="text-emerald-500">2.</span>
+             <span>Visit the <b>Attempted URL</b> in your browser. If you see your Evolution dashboard instead of JSON data, your Base URL is incorrect.</span>
           </li>
           <li className="flex gap-3">
-             <span className="text-emerald-500">✔</span>
-             <span>Double check your Global API Key is correct.</span>
+             <span className="text-emerald-500">3.</span>
+             <span>The Global API Key is sensitive. Ensure no extra spaces are present.</span>
           </li>
         </ul>
       </div>

@@ -26,54 +26,58 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     throw new Error("Evolution API configuration is incomplete.");
   }
   
-  // Clean up Base URL
+  // 1. Prepare the Base URL
+  // We trim and remove trailing slash, but we no longer strip /v1 or /instance 
+  // because some deployments require them to be explicitly in the base URL.
   let baseUrl = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   
-  // Common mistake: user adds '/instance' or '/v1' to the base URL manually
-  // We want to ensure the final URL is clean.
-  // Most Evolution API v1 endpoints are direct: {base}/instance/connectionStatus/{name}
-  // We'll strip common redundant path endings if the user included them
-  baseUrl = baseUrl.replace(/\/(instance|v1|v2)$/i, '');
-
   if (!baseUrl.startsWith('http')) {
     baseUrl = 'https://' + baseUrl;
   }
 
+  // 2. Prepare the full URL
   const cleanEndpoint = endpoint.replace(/^\//, '');
   const url = `${baseUrl}/${cleanEndpoint}`;
 
-  console.log(`Evolution Proxy Request: ${method} ${url}`);
+  console.log(`[Evolution Proxy] Requesting: ${method} ${url}`);
 
   try {
     const response = await fetch(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'apikey': evolutionConfig.apiKey
+        'apikey': evolutionConfig.apiKey // Lowercase as used in your successful curl
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(12000) // 12s timeout
+      signal: AbortSignal.timeout(15000)
     });
 
-    const data = await response.json().catch(() => ({}));
+    const text = await response.text();
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = { rawResponse: text };
+    }
 
     if (!response.ok) {
-      const errorMsg = data.message || data.error || `HTTP ${response.status} - Not Found or Invalid Endpoint`;
-      const err = new Error(errorMsg);
+      // Create a descriptive error based on the response
+      const msg = data.message || data.error || `Evolution API returned HTTP ${response.status}`;
+      const err = new Error(msg);
       err.status = response.status;
       err.attemptedUrl = url;
+      err.rawResponse = text;
       throw err;
     }
 
     return data;
   } catch (e) {
     if (e.name === 'TimeoutError') {
-      const err = new Error("Connection to Evolution API timed out. Check if your server is awake.");
+      const err = new Error("Evolution API server timed out. Check your URL.");
       err.attemptedUrl = url;
       throw err;
     }
-    // Pass along the attempted URL for debugging in the UI
-    e.attemptedUrl = url;
+    if (!e.attemptedUrl) e.attemptedUrl = url;
     throw e;
   }
 }
@@ -81,28 +85,14 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
 // --- AI Service Logic ---
 const SYSTEM_PROMPT = `
 You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP. 
-
-TONE:
-- Friendly, professional, and concise.
-- Use 1-2 natural sentences. 
-- Acknowledge greetings (Jambo, Hello) before assisting.
-
-RULES:
-1. Only provide pricing if the user asks about packages, costs, or plans.
-2. Use "Pole" (sorry) when discussing outages or technical problems.
-3. Keep instructions simple.
-4. If an issue is serious or unresolvable, append [SERIOUS_ISSUE_DETECTED].
+TONE: Friendly, professional, and concise. 
 `;
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY;
-  if (!apiKey) return { text: "AI Key missing on server. Pole.", isSerious: false };
-
+  if (!apiKey) return { text: "AI Key missing on server.", isSerious: false };
   const ai = new GoogleGenAI({ apiKey });
-  const maintenanceContext = maintenanceRecords.length > 0 
-    ? maintenanceRecords.map(m => `- ${m.area}: ${m.status}`).join('\n')
-    : "All systems operational.";
-
+  const maintenanceContext = maintenanceRecords.map(m => `- ${m.area}: ${m.status}`).join('\n') || "Operational.";
   const fullPrompt = SYSTEM_PROMPT + "\nContext:\n" + maintenanceContext;
 
   try {
@@ -114,15 +104,9 @@ async function generateAIResponse(history, maintenanceRecords) {
       })),
       config: { systemInstruction: fullPrompt }
     });
-
-    const text = response.text || "";
-    return { 
-      text: text.replace("[SERIOUS_ISSUE_DETECTED]", "").trim(), 
-      isSerious: text.includes("[SERIOUS_ISSUE_DETECTED]") 
-    };
+    return { text: response.text || "", isSerious: response.text.includes("[SERIOUS_ISSUE_DETECTED]") };
   } catch (e) {
-    console.error("AI Error:", e);
-    return { text: "EcoSpot AI is momentarily offline. Pole.", isSerious: false };
+    return { text: "AI is busy. Pole.", isSerious: false };
   }
 }
 
@@ -144,31 +128,32 @@ app.post('/api/issues', (req, res) => {
 
 app.post('/api/config', (req, res) => {
   evolutionConfig = req.body;
-  console.log("Updated Evolution Config:", evolutionConfig);
   res.json({ success: true });
 });
 
-// Instance Status Proxy
 app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig || !evolutionConfig.instanceName) {
-      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Configuration is missing instance name." });
+      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Missing instance name." });
     }
     
-    const data = await evolutionRequest(`instance/connectionStatus/${evolutionConfig.instanceName}`);
+    const encodedName = encodeURIComponent(evolutionConfig.instanceName);
+    // Standard Evolution API endpoint for connection status
+    const data = await evolutionRequest(`instance/connectionStatus/${encodedName}`);
     const state = data.instance?.state;
 
     res.json({ 
       status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
-      message: state === 'open' ? 'Connected successfully.' : `State: ${state || 'Closed/Connecting'}`,
+      message: state === 'open' ? 'Connected.' : `Instance state is: ${state || 'Closed'}`,
       raw: data 
     });
   } catch (e) {
-    console.error("Status Check Error:", e.message);
+    console.error("Proxy Error:", e.message);
     res.status(200).json({ 
       status: "ERROR", 
-      message: e.message || "Endpoint returned 404 or was unreachable.",
-      url: e.attemptedUrl
+      message: e.message,
+      url: e.attemptedUrl,
+      raw: e.rawResponse
     });
   }
 });
@@ -176,28 +161,22 @@ app.get('/api/instance/status', async (req, res) => {
 app.post('/api/broadcast', async (req, res) => {
   const { message } = req.body;
   if (!message || !evolutionConfig) return res.status(400).json({ error: "Missing data" });
-
   res.json({ status: "started", count: contacts.length });
-
+  const encodedName = encodeURIComponent(evolutionConfig.instanceName);
   for (const contact of contacts) {
     try {
-      await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
-        number: contact.jid.split('@')[0],
-        text: message
+      await evolutionRequest(`message/sendText/${encodedName}`, 'POST', { 
+        number: contact.jid.split('@')[0], 
+        text: message 
       });
       await new Promise(r => setTimeout(r, 1500));
-    } catch (e) {
-      console.error(`Broadcast failed for ${contact.jid}:`, e.message);
-    }
+    } catch (e) {}
   }
 });
 
-// Webhook Sync
 app.post('/api/sync', async (req, res) => {
   try {
-    const payload = req.body || {};
-    const { event, data } = payload;
-    
+    const { event, data } = req.body || {};
     if (event === 'messages.upsert') {
       const message = data.messages?.[0];
       if (message && !message.key.fromMe) {
@@ -205,50 +184,27 @@ app.post('/api/sync', async (req, res) => {
         const pushName = message.pushName || "Customer";
         const text = message.message?.conversation || message.message?.extendedTextMessage?.text;
 
-        const existingIdx = contacts.findIndex(c => c.jid === sender);
-        if (existingIdx > -1) {
-          contacts[existingIdx].lastInteraction = new Date();
-          contacts[existingIdx].messageCount++;
-          if (pushName !== "Customer") contacts[existingIdx].name = pushName;
+        const idx = contacts.findIndex(c => c.jid === sender);
+        if (idx > -1) {
+          contacts[idx].lastInteraction = new Date();
+          contacts[idx].messageCount++;
         } else {
-          contacts.unshift({
-            jid: sender,
-            name: pushName,
-            lastInteraction: new Date(),
-            messageCount: 1
-          });
+          contacts.unshift({ jid: sender, name: pushName, lastInteraction: new Date(), messageCount: 1 });
         }
 
         if (text && evolutionConfig) {
-          const { text: aiResponse, isSerious } = await generateAIResponse([{ role: 'user', content: text }], maintenance);
-          
-          if (isSerious) {
-            issues.unshift({
-              id: Date.now().toString(),
-              customerPhone: sender.split('@')[0],
-              description: text,
-              severity: 'Critical',
-              timestamp: new Date(),
-              status: 'Pending',
-              location: 'WhatsApp'
-            });
-          }
-
+          const { text: aiResponse } = await generateAIResponse([{ role: 'user', content: text }], maintenance);
           try {
-            await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
+            await evolutionRequest(`message/sendText/${encodeURIComponent(evolutionConfig.instanceName)}`, 'POST', {
               number: sender.split('@')[0],
-              text: aiResponse,
-              linkPreview: true
+              text: aiResponse
             });
-          } catch (err) {
-            console.error(`Reply failed to ${sender}:`, err.message);
-          }
+          } catch (err) {}
         }
       }
     }
     res.status(200).json({ status: 'success' });
   } catch (webhookErr) {
-    console.error("Webhook Error:", webhookErr);
     res.status(500).json({ status: 'error' });
   }
 });
@@ -259,6 +215,4 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`EcoSpot Server active on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`EcoSpot Server active on ${PORT}`));
