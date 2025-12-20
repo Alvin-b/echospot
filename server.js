@@ -26,14 +26,11 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     throw new Error("Evolution API configuration is incomplete.");
   }
   
-  // 1. Prepare and Clean the Base URL
   let baseUrl = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
-  
   if (!baseUrl.startsWith('http')) {
     baseUrl = 'https://' + baseUrl;
   }
 
-  // Ensure we don't have double slashes if the endpoint starts with /
   const cleanEndpoint = endpoint.replace(/^\//, '');
   const url = `${baseUrl}/${cleanEndpoint}`;
 
@@ -131,21 +128,31 @@ app.post('/api/config', (req, res) => {
 app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig || !evolutionConfig.instanceName) {
-      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Missing instance name." });
+      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Missing configuration." });
     }
     
-    const encodedName = encodeURIComponent(evolutionConfig.instanceName);
+    // Using fetchInstances is the most robust way across ALL Evolution versions
+    const instances = await evolutionRequest('instance/fetchInstances');
     
-    // UPDATED: Using /instance/info/{instanceName} which is the standard for Evolution v2.3+
-    const data = await evolutionRequest(`instance/info/${encodedName}`);
-    
-    // Check for state in various possible response structures
-    const state = data.instance?.status || data.status || data.instance?.state || data.state;
+    // Find our specific instance in the list
+    const myInstance = Array.isArray(instances) 
+      ? instances.find(i => i.instanceName === evolutionConfig.instanceName || i.name === evolutionConfig.instanceName)
+      : null;
+
+    if (!myInstance) {
+      return res.json({ 
+        status: "ERROR", 
+        message: `Instance "${evolutionConfig.instanceName}" not found on this server. Please create it first.`,
+        raw: instances 
+      });
+    }
+
+    const state = myInstance.status || myInstance.connectionStatus || myInstance.state;
 
     res.json({ 
       status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
-      message: state === 'open' ? 'Connected.' : `Instance status is: ${state || 'unknown'}`,
-      raw: data 
+      message: state === 'open' ? 'Connected.' : `Instance status is: ${state || 'Closed'}`,
+      raw: myInstance 
     });
   } catch (e) {
     console.error("Proxy Error:", e.message);
