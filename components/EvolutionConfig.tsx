@@ -25,7 +25,8 @@ const EvolutionConfigComp: React.FC = () => {
       setStatus('disconnected');
     }
 
-    const isKeySet = process.env.API_KEY && process.env.API_KEY !== "undefined";
+    // Check if the key is present in the build bundle
+    const isKeySet = process.env.API_KEY && process.env.API_KEY !== "" && process.env.API_KEY !== "undefined";
     setGeminiStatus(isKeySet ? 'active' : 'missing');
   }, []);
 
@@ -53,11 +54,14 @@ const EvolutionConfigComp: React.FC = () => {
         [{ role: 'user', content: 'Say "Connection Successful"' }],
         []
       );
+      // If the response contains the 'Config Error' string we defined in the service, it failed
+      const isFailed = response.text.includes("System Configuration Error") || response.text.includes("offline");
+      
       setTestResult({ 
-        success: !response.text.includes("offline") && !response.text.includes("Error"), 
+        success: !isFailed, 
         message: response.text 
       });
-      setGeminiStatus('active');
+      setGeminiStatus(!isFailed ? 'active' : 'missing');
     } catch (e) {
       setTestResult({ success: false, message: "Connection failed. Check your API Key." });
       setGeminiStatus('missing');
@@ -88,12 +92,12 @@ const EvolutionConfigComp: React.FC = () => {
             </div>
             <div>
               <h3 className={`text-lg font-black tracking-tight ${geminiStatus === 'active' ? 'text-emerald-900' : 'text-rose-900'}`}>
-                Gemini AI Engine Status: {geminiStatus === 'active' ? 'READY' : 'ACTION REQUIRED'}
+                Gemini AI Engine Status: {geminiStatus === 'active' ? 'READY' : 'KEY NOT DETECTED'}
               </h3>
               <p className={`text-sm font-medium ${geminiStatus === 'active' ? 'text-emerald-700' : 'text-rose-700'}`}>
                 {geminiStatus === 'active' 
                   ? 'Your system is fully connected to Google Generative AI.' 
-                  : 'The API_KEY environment variable is missing from the system.'}
+                  : 'The engine is currently offline. Follow the naming guide below.'}
               </p>
             </div>
           </div>
@@ -109,6 +113,31 @@ const EvolutionConfigComp: React.FC = () => {
             {geminiStatus === 'testing' ? 'Testing...' : 'Run Connection Test'}
           </button>
         </div>
+
+        {geminiStatus === 'missing' && (
+          <div className="mt-6 p-6 bg-white/60 rounded-3xl border border-rose-200">
+            <h4 className="text-xs font-black text-rose-900 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <span className="flex h-2 w-2 rounded-full bg-rose-500"></span>
+              Why is my key not showing?
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <p className="text-[10px] font-bold text-rose-800 uppercase tracking-tight">1. Naming Conflict</p>
+                <p className="text-[10px] text-rose-700 leading-relaxed">
+                  You might have named your variable <code className="bg-rose-100 px-1 rounded">GEMINI_API_KEY</code>. 
+                  In Render, please rename it to exactly <code className="bg-rose-100 font-black px-1 rounded">API_KEY</code>.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-[10px] font-bold text-rose-800 uppercase tracking-tight">2. Static Site Deployment</p>
+                <p className="text-[10px] text-rose-700 leading-relaxed">
+                  Variables are injected during the <b>Build</b>. After saving your key in Render, you <b>MUST</b> go to "Deploy" and select <b>"Manual Deploy &rarr; Clear Cache & Deploy"</b>.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {testResult && (
           <div className={`mt-6 p-4 rounded-xl text-xs font-mono border ${
             testResult.success ? 'bg-white/50 border-emerald-200 text-emerald-800' : 'bg-white/50 border-rose-200 text-rose-800'
@@ -136,14 +165,33 @@ const EvolutionConfigComp: React.FC = () => {
         </div>
 
         {status === 'error' && (
-          <div className="mb-8 p-6 bg-red-50 border border-red-100 rounded-3xl">
-            <h4 className="text-xs font-black text-red-800 uppercase tracking-widest mb-2 flex items-center gap-2">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-              Connection Diagnostics
-            </h4>
-            <p className="text-xs text-red-700 font-medium mb-4">{errorDetails}</p>
-            <div className="bg-white/50 p-4 rounded-xl border border-red-100 text-[10px] text-red-900 font-mono">
-              PRO TIP: Most "Failed to fetch" errors are caused by CORS. Ensure your Evolution API has <b>CORS_ORIGIN=*</b> or <b>CORS_ORIGIN={window.location.origin}</b> set in its environment variables.
+          <div className="mb-8 p-8 bg-rose-50 border border-rose-100 rounded-[2.5rem] shadow-sm animate-in zoom-in-95 duration-300">
+            <div className="flex items-start gap-5">
+              <div className="bg-rose-500 p-3 rounded-2xl text-white shadow-lg shadow-rose-500/20">
+                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+              </div>
+              <div className="flex-1">
+                <h4 className="text-sm font-black text-rose-900 uppercase tracking-widest mb-3">CRITICAL: Connection Blocked by Evolution Server</h4>
+                <p className="text-xs text-rose-800 font-medium mb-6 leading-relaxed">
+                  The request to <span className="font-mono bg-rose-100 px-1 rounded">{config.baseUrl}</span> was rejected. 
+                  This is usually a <b>CORS security policy</b> restriction on your Evolution API instance.
+                </p>
+                
+                <div className="bg-white/60 p-6 rounded-3xl border border-rose-200 space-y-4">
+                  <p className="text-[10px] font-black text-rose-900 uppercase tracking-widest">Required Evolution API Configuration:</p>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-rose-100">
+                      <code className="text-[11px] font-mono text-rose-700">CORS_ORIGIN</code>
+                      <code className="text-[11px] font-mono font-black text-emerald-600">*</code>
+                    </div>
+                    <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-rose-100">
+                      <code className="text-[11px] font-mono text-rose-700">CORS_METHODS</code>
+                      <code className="text-[11px] font-mono font-black text-emerald-600">GET,POST,PUT,DELETE,PATCH,OPTIONS</code>
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-rose-600 italic">Note: After updating these variables in your Evolution environment (e.g., Docker Compose or .env), you <b>must</b> restart the Evolution instance.</p>
+                </div>
+              </div>
             </div>
           </div>
         )}
@@ -213,13 +261,13 @@ const EvolutionConfigComp: React.FC = () => {
                 </li>
              </ul>
              
-             <div className="mt-8 p-5 bg-amber-50 border border-amber-100 rounded-2xl">
-                <p className="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-1">Critical: Troubleshooting Error Status</p>
+             <div className="mt-8 p-6 bg-amber-50 border border-amber-100 rounded-3xl">
+                <p className="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-2 flex items-center gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  Network Hint
+                </p>
                 <p className="text-[10px] text-amber-700 leading-relaxed font-medium">
-                  If status shows "Sync Failed", ensure your Evolution API server has:
-                  <br/><code className="bg-white/50 px-1 rounded">CORS_ORIGIN=*</code>
-                  <br/><code className="bg-white/50 px-1 rounded">CORS_METHODS=GET,POST,OPTIONS</code>
-                  <br/>set in the <code className="italic">.env</code> or Docker config.
+                  Ensure your Evolution URL includes the protocol (e.g. <b>https://</b>). If you are using a self-signed SSL, the browser might block it until you visit the URL directly once.
                 </p>
              </div>
           </div>
@@ -240,7 +288,7 @@ const EvolutionConfigComp: React.FC = () => {
                 <li>3. Click <b>Add Environment Variable</b>.</li>
                 <li>4. Key: <code className="bg-emerald-500/20 px-2 py-0.5 rounded text-emerald-300 font-mono">API_KEY</code></li>
                 <li>5. Value: <span className="text-slate-500 italic">Your Gemini API Secret</span></li>
-                <li>6. <b>Save</b> and trigger a <b>Manual Deploy</b>.</li>
+                <li>6. <b>Save</b> and trigger a <b>Manual Deploy (Clear Cache)</b>.</li>
               </ol>
             </div>
             
