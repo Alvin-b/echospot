@@ -17,15 +17,12 @@ const Dashboard: React.FC = () => {
   const conversationContexts = useRef<Map<string, {role: string, content: string}[]>>(new Map());
 
   useEffect(() => {
-    // Detect hosting URL
     const currentOrigin = window.location.origin;
-    // We provide this URL for the Evolution API Webhook field
     setWebhookUrl(`${currentOrigin}/api/sync`);
 
     let interval: any;
     if (isLive) {
       checkInstance();
-      // Polling every 4 seconds to act as a real-time webhook receiver
       interval = setInterval(handleAutoReplyCycle, 4000);
     } else {
       setStatus('offline');
@@ -59,10 +56,7 @@ const Dashboard: React.FC = () => {
         const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text;
         const msgId = msg.key.id;
 
-        // Immediately mark as seen internally to prevent double processing
         repliedMessageIds.current.add(msgId);
-        
-        // Save contact to inbuilt memory for broadcasting later
         evolutionService.saveOrUpdateContact(sender, pushName);
         
         setRecentTraffic(prev => [{ from: pushName, text, time: new Date() }, ...prev].slice(0, 8));
@@ -74,11 +68,9 @@ const Dashboard: React.FC = () => {
         history.push({ role: MessageRole.USER, content: text });
         if (history.length > 20) history.splice(0, 2);
 
-        // Call Gemini for an empathetic response
         const { text: aiResponse, isSerious } = await geminiService.generateResponse(history, MOCK_MAINTENANCE);
         history.push({ role: 'agent', content: aiResponse });
 
-        // Send back to WhatsApp
         await evolutionService.sendMessage(sender, aiResponse);
         setProcessedCount(prev => prev + 1);
       }
@@ -198,7 +190,7 @@ const Dashboard: React.FC = () => {
                 <div className="flex gap-4">
                    <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black shrink-0">1</div>
                    <p className="text-xs text-slate-400 leading-relaxed">
-                     Go to your <b>Evolution Manager</b> → Instances → (Your Instance) → <b>Webhook</b>.
+                     Go to your <b>Evolution Manager</b> &rarr; Instances &rarr; (Your Instance) &rarr; <b>Webhook</b>.
                    </p>
                 </div>
                 <div className="flex gap-4">
