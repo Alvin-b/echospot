@@ -82,7 +82,7 @@ const EvolutionConfigComp: React.FC = () => {
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-500 pb-20">
       
-      {/* 1. BUILD SYSTEM INSPECTOR - Helping verify Render Env Vars */}
+      {/* 1. BUILD SYSTEM INSPECTOR */}
       <div className="bg-slate-900 rounded-[2.5rem] p-8 border border-slate-800 shadow-2xl overflow-hidden relative">
         <div className="relative z-10">
           <div className="flex items-center justify-between mb-6">
@@ -90,7 +90,7 @@ const EvolutionConfigComp: React.FC = () => {
               <span className="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
               Live Build Manifest
             </h3>
-            <span className="text-[9px] text-slate-500 font-mono">APP_VERSION: 1.0.4-stable</span>
+            <span className="text-[9px] text-slate-500 font-mono">APP_VERSION: 1.0.5-stable</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -133,52 +133,7 @@ const EvolutionConfigComp: React.FC = () => {
         <div className="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 bg-emerald-500/10 blur-[80px] rounded-full pointer-events-none"></div>
       </div>
 
-      {/* 2. GEMINI HEALTH CHECK */}
-      <div className={`rounded-[2.5rem] p-8 border ${
-        geminiStatus === 'active' 
-          ? 'bg-emerald-50 border-emerald-100' 
-          : 'bg-rose-50 border-rose-100'
-      }`}>
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-5">
-            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl shadow-lg ${
-              geminiStatus === 'active' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white animate-pulse'
-            }`}>
-              {geminiStatus === 'active' ? '✓' : '!'}
-            </div>
-            <div>
-              <h3 className={`text-lg font-black tracking-tight ${geminiStatus === 'active' ? 'text-emerald-900' : 'text-rose-900'}`}>
-                Gemini AI Engine: {geminiStatus === 'active' ? 'ONLINE' : 'OFFLINE'}
-              </h3>
-              <p className={`text-sm font-medium ${geminiStatus === 'active' ? 'text-emerald-700' : 'text-rose-700'}`}>
-                {geminiStatus === 'active' 
-                  ? 'Key detected and builds verified.' 
-                  : 'The AI brain is missing. Check the Live Build Manifest above.'}
-              </p>
-            </div>
-          </div>
-          <button 
-            onClick={testGemini}
-            disabled={geminiStatus === 'testing'}
-            className={`px-6 py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all ${
-              geminiStatus === 'active' 
-                ? 'bg-emerald-600 text-white hover:bg-emerald-700' 
-                : 'bg-rose-600 text-white hover:bg-rose-700'
-            }`}
-          >
-            {geminiStatus === 'testing' ? 'Testing...' : 'Run Live Test'}
-          </button>
-        </div>
-        {testResult && (
-          <div className={`mt-6 p-4 rounded-xl text-xs font-mono border ${
-            testResult.success ? 'bg-white/50 border-emerald-200 text-emerald-800' : 'bg-white/50 border-rose-200 text-rose-800'
-          }`}>
-            <span className="font-black mr-2">[LOG]:</span> {testResult.message}
-          </div>
-        )}
-      </div>
-
-      {/* 3. EVOLUTION CONFIGURATION */}
+      {/* 2. EVOLUTION CONFIGURATION */}
       <div className="bg-white rounded-[3rem] p-10 border border-slate-100 shadow-xl shadow-slate-200/50">
         <div className="flex items-center justify-between mb-10">
           <div>
@@ -192,7 +147,7 @@ const EvolutionConfigComp: React.FC = () => {
             'bg-slate-50 text-slate-400 border-slate-200'
           }`}>
             <span className={`w-2 h-2 rounded-full ${status === 'connected' ? 'bg-emerald-500' : status === 'error' ? 'bg-rose-500' : 'bg-slate-300'}`}></span>
-            {status === 'connected' ? 'Connected' : status === 'loading' ? 'Checking...' : status === 'error' ? 'CORS Blocked' : 'Disconnected'}
+            {status === 'connected' ? 'Connected' : status === 'loading' ? 'Checking...' : status === 'error' ? 'Sync Failed' : 'Disconnected'}
           </div>
         </div>
 
@@ -205,12 +160,11 @@ const EvolutionConfigComp: React.FC = () => {
               <div className="flex-1">
                 <h4 className="text-sm font-black text-rose-900 uppercase tracking-widest mb-3">Evolution Server Action Required</h4>
                 <p className="text-xs text-rose-800 font-medium mb-6 leading-relaxed">
-                  Your browser is blocking the request to <span className="font-mono bg-rose-100 px-1 rounded">{config.baseUrl}</span>. 
-                  This is nearly always because the Evolution API server has a restrictive security policy.
+                  The request was blocked. This dashboard runs in your browser, so your Evolution server must explicitly allow it.
                 </p>
                 
                 <div className="bg-white/60 p-6 rounded-3xl border border-rose-200 space-y-4">
-                  <p className="text-[10px] font-black text-rose-900 uppercase tracking-widest">Update Evolution Environment (.env or Docker):</p>
+                  <p className="text-[10px] font-black text-rose-900 uppercase tracking-widest">Update your Evolution Server Environment:</p>
                   <div className="space-y-2">
                     <div className="flex items-center justify-between p-3 bg-white rounded-xl border border-rose-100">
                       <code className="text-[10.5px] font-mono text-rose-700">CORS_ORIGIN</code>
@@ -226,10 +180,9 @@ const EvolutionConfigComp: React.FC = () => {
                     </div>
                   </div>
                   <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
-                    <p className="text-[10px] text-amber-900 font-bold mb-1 uppercase tracking-tight">Mixed Content Warning:</p>
+                    <p className="text-[10px] text-amber-900 font-bold mb-1 uppercase tracking-tight">Note for Cloud Providers:</p>
                     <p className="text-[10px] text-amber-800 leading-tight">
-                      Since your dashboard is on <b>HTTPS</b>, you <b>must</b> use an <code className="font-bold">https://</code> Evolution URL. 
-                      Browsers block calls from Secure to Insecure (HTTP) sites automatically.
+                      If you are using a provider like Cloudfy, check their dashboard for "CORS" or "Security" settings. The <code className="font-bold">apikey</code> header must be allowed.
                     </p>
                   </div>
                 </div>
@@ -285,32 +238,31 @@ const EvolutionConfigComp: React.FC = () => {
           </div>
 
           <div className="bg-slate-50 rounded-[2.5rem] p-8 border border-slate-200/50 flex flex-col">
-             <h4 className="font-black text-xs uppercase tracking-[0.2em] text-slate-400 mb-6">Setup Guidance</h4>
+             <h4 className="font-black text-xs uppercase tracking-[0.2em] text-slate-400 mb-6">CORS Troubleshooter</h4>
              <ul className="space-y-6">
                 <li className="flex gap-4">
                    <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-600 text-xs font-black shrink-0">1</div>
                    <div>
-                      <p className="text-xs text-slate-900 font-bold mb-1">CORS & Preflight</p>
-                      <p className="text-[10px] text-slate-500 leading-relaxed">Browsers send an OPTIONS request before the real one. If your server isn't configured for it, it fails.</p>
+                      <p className="text-xs text-slate-900 font-bold mb-1">Preflight Check</p>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">The browser sends a "test" request first. If your server doesn't respond with <code className="bg-slate-200 px-1 rounded">200 OK</code> to OPTIONS, the connection fails.</p>
                    </div>
                 </li>
                 <li className="flex gap-4">
                    <div className="w-6 h-6 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-600 text-xs font-black shrink-0">2</div>
                    <div>
-                      <p className="text-xs text-slate-900 font-bold mb-1">Global Key vs Instance Key</p>
-                      <p className="text-[10px] text-slate-500 leading-relaxed">Ensure you use the <b>Global API Key</b> found in your Evolution dashboard for status checks.</p>
+                      <p className="text-xs text-slate-900 font-bold mb-1">The "apikey" Header</p>
+                      <p className="text-[10px] text-slate-500 leading-relaxed">This is a non-standard header. You MUST explicitly allow it in <code className="bg-slate-200 px-1 rounded">CORS_HEADERS</code> or equivalent settings.</p>
                    </div>
                 </li>
              </ul>
              
-             <div className="mt-8 p-6 bg-emerald-900 rounded-3xl text-white">
+             <div className="mt-8 p-6 bg-slate-900 rounded-3xl text-white">
                 <p className="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-2 flex items-center gap-2">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                  Success Tip
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                  Immediate Solution
                 </p>
                 <p className="text-[10px] text-emerald-100/70 leading-relaxed font-medium">
-                  If CORS settings are correct but still failing, try opening your Evolution URL in a new browser tab. 
-                  If it asks for a certificate or security bypass, you must accept it before the dashboard can connect.
+                  If you cannot edit server settings, try using a browser extension like "CORS Unblock" for local testing. In production, the server <b>must</b> be updated.
                 </p>
              </div>
           </div>

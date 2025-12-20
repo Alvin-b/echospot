@@ -77,17 +77,41 @@ export class EvolutionService {
     );
   }
 
+  async testConnectionOnly(): Promise<boolean> {
+    const config = this.getConfig();
+    if (!config || !config.baseUrl) return false;
+    try {
+      // Try a simple fetch to see if the server is alive and CORS is enabled for basic requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      await fetch(config.baseUrl, { 
+        method: 'GET', 
+        mode: 'no-cors',
+        signal: controller.signal 
+      });
+      clearTimeout(timeoutId);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   private async request(endpoint: string, method: string = 'GET', body?: any) {
     const config = this.getConfig();
     if (!config || !config.baseUrl) throw new Error("Evolution API not configured");
 
-    // Cleanly join base URL and endpoint
+    // Protocol check: Browser blocks HTTPS -> HTTP
+    if (window.location.protocol === 'https:' && config.baseUrl.startsWith('http:')) {
+      throw new Error("MIXED_CONTENT_ERROR: Your dashboard is HTTPS but your Evolution URL is HTTP. The browser blocks this. Use an HTTPS URL or an SSL proxy.");
+    }
+
     const url = `${config.baseUrl}/${endpoint.replace(/^\//, '')}`;
     
     try {
       const response = await fetch(url, {
         method,
-        mode: 'cors', // Explicitly request CORS
+        mode: 'cors',
         headers: {
           'Content-Type': 'application/json',
           'apikey': config.apiKey
@@ -103,9 +127,9 @@ export class EvolutionService {
       return response.json();
     } catch (error: any) {
       console.error(`Evolution Request Failed [${method} ${endpoint}]:`, error.message);
-      // If the error message is "Failed to fetch", it's almost certainly a CORS or SSL issue.
-      if (error.message === 'Failed to fetch') {
-        throw new Error("CORS_OR_NETWORK_ERROR: The Evolution API server rejected the request or is unreachable. Check your CORS settings.");
+      
+      if (error.name === 'AbortError' || error.message === 'Failed to fetch') {
+        throw new Error("CORS_OR_NETWORK_ERROR: The browser cannot reach your Evolution server. Ensure 'CORS_ORIGIN=*' and 'CORS_HEADERS=apikey' are set in your server environment.");
       }
       throw error;
     }
