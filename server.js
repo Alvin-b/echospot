@@ -12,14 +12,21 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+
+// Handle both JSON and Form-Encoded payloads (some proxies/versions change this)
+app.use(express.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString();
+  }
+}));
+app.use(express.urlencoded({ extended: true }));
 
 // --- Server-Side State ---
 let maintenance = [];
 let issues = [];
 let contacts = []; 
 let evolutionConfig = null;
-let webhookLogs = []; // Stores the last 50 events
+let webhookLogs = []; 
 
 function addLog(type, message, details = null) {
   const log = {
@@ -95,61 +102,65 @@ app.get('/api/instance/status', async (req, res) => {
   }
 });
 
-// Endpoint to simulate a webhook event for testing purposes
 app.post('/api/test-webhook', async (req, res) => {
   const mockPayload = {
     event: "messages.upsert",
     instance: evolutionConfig?.instanceName || "test-instance",
     data: {
-      key: {
-        remoteJid: "254700000000@s.whatsapp.net",
-        fromMe: false,
-        id: "SIMULATED_" + Date.now()
-      },
+      key: { remoteJid: "254700000000@s.whatsapp.net", fromMe: false, id: "SIMULATED_" + Date.now() },
       pushName: "Test User",
-      message: {
-        conversation: req.body.text || "Hello EcoSpot"
-      },
-      messageTimestamp: Math.floor(Date.now() / 1000)
+      message: { conversation: req.body.text || "Hello EcoSpot" }
     }
   };
-  
-  addLog('INFO', 'Simulating webhook event...');
-  // We call our own sync endpoint
+  addLog('INFO', 'Simulating webhook event locally...');
   const response = await fetch(`http://localhost:${PORT}/api/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(mockPayload)
   });
-  
   res.json({ success: response.ok, status: response.status });
 });
 
+// THE WEBHOOK ENDPOINT
 app.post('/api/sync', async (req, res) => {
   const payload = req.body || {};
-  const contentType = req.headers['content-type'];
-  
-  addLog('WEBHOOK', `Event: ${payload.event || 'Unknown'} | Content-Type: ${contentType}`, {
-    headers: req.headers,
-    body: payload
+  const method = req.method;
+  const headers = req.headers;
+
+  // Log everything for debugging
+  addLog('WEBHOOK', `Incoming Request: ${method} to /api/sync`, {
+    headers: {
+      'content-type': headers['content-type'],
+      'user-agent': headers['user-agent'],
+      'host': headers['host']
+    },
+    body: payload,
+    raw: req.rawBody ? 'Captured' : 'None'
   });
 
+  // 1. Handle Evolution API "Test" button
+  if (payload.event === 'test' || payload.type === 'test') {
+    addLog('SUCCESS', 'Received "test" event from Evolution API. Connectivity confirmed!');
+    return res.status(200).send('SUCCESS_TEST');
+  }
+
+  // 2. Ensure we have config to respond
   if (!evolutionConfig) {
-    addLog('ERROR', 'Discarded webhook: Evolution API not configured on server.');
+    addLog('ERROR', 'Discarded webhook: Evolution API not configured on server. Please go to Settings and click Save.');
     return res.status(200).send('NOT_CONFIGURED');
   }
 
+  // 3. Handle messages.upsert
   if (payload.event === 'messages.upsert') {
-    // Try both nested and flat message structures used by different Evolution versions
     const message = (payload.data?.messages ? payload.data.messages[0] : payload.data) || {};
     
     if (!message.key) {
-      addLog('ERROR', 'Malformed payload: Missing "key" object in message data.', payload);
+      addLog('ERROR', 'Malformed payload: No "key" found in message data.', payload);
       return res.status(200).send('MALFORMED');
     }
 
     if (message.key.fromMe) {
-      addLog('INFO', 'Skipped: Message sent from the bot itself.');
+      addLog('INFO', 'Skipped: Message is from the bot itself.');
       return res.status(200).send('SKIPPED');
     }
 
@@ -159,7 +170,7 @@ app.post('/api/sync', async (req, res) => {
                  message.message?.imageMessage?.caption;
 
     if (!text) {
-      addLog('INFO', `Skipped: No readable text content from ${sender}. (Media message without caption?)`);
+      addLog('INFO', `Skipped: Message from ${sender} has no text content.`);
       return res.status(200).send('NO_TEXT');
     }
 
@@ -178,16 +189,24 @@ app.post('/api/sync', async (req, res) => {
       });
 
       if (response.ok) {
-        addLog('SUCCESS', `Replied to ${sender} successfully.`);
+        addLog('SUCCESS', `Replied to ${sender} via Evolution API.`);
       } else {
         const errData = await response.text();
-        addLog('ERROR', `Failed to reply. Evolution API status: ${response.status}`, errData);
+        addLog('ERROR', `Failed to reply. Status: ${response.status}`, errData);
       }
     } catch (e) {
-      addLog('ERROR', `Network error while replying to ${sender}: ${e.message}`);
+      addLog('ERROR', `Network error while replying: ${e.message}`);
     }
   }
+
+  // Always return 200 to satisfy webhook providers
   res.status(200).send('OK');
+});
+
+// Support GET requests just in case Evolution or a proxy tries to "ping" the URL
+app.get('/api/sync', (req, res) => {
+  addLog('INFO', 'Received GET request to /api/sync (Webhook URL). Returning 200 OK.');
+  res.status(200).send('EcoSpot Webhook Endpoint Active');
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
