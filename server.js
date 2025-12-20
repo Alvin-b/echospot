@@ -17,14 +17,21 @@ app.use(express.json());
 // --- Server-Side State ---
 let maintenance = [];
 let issues = [];
-let contacts = []; // Persistent memory of customers
+let contacts = []; 
 let evolutionConfig = null;
 
 // --- Helper: Evolution API Requester ---
 async function evolutionRequest(endpoint, method = 'GET', body = null) {
-  if (!evolutionConfig) throw new Error("Evolution API not configured on server.");
+  if (!evolutionConfig || !evolutionConfig.baseUrl || !evolutionConfig.apiKey) {
+    throw new Error("Evolution API not fully configured on server.");
+  }
   
-  const url = `${evolutionConfig.baseUrl.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
+  const baseUrl = evolutionConfig.baseUrl.replace(/\/$/, '');
+  const cleanEndpoint = endpoint.replace(/^\//, '');
+  const url = `${baseUrl}/${cleanEndpoint}`;
+
+  console.log(`Evolution Proxy Request: ${method} ${url}`);
+
   const response = await fetch(url, {
     method,
     headers: {
@@ -91,55 +98,58 @@ async function generateAIResponse(history, maintenanceRecords) {
 
 // --- API Routes ---
 
-// Get all dashboard data including contacts
 app.get('/api/data', (req, res) => {
   res.json({ maintenance, issues, contacts, config: evolutionConfig });
 });
 
-// Maintenance Management
 app.post('/api/maintenance', (req, res) => {
   maintenance = req.body || [];
   res.json({ success: true });
 });
 
-// Issue Management
 app.post('/api/issues', (req, res) => {
   issues = req.body || [];
   res.json({ success: true });
 });
 
-// Config Management
 app.post('/api/config', (req, res) => {
   evolutionConfig = req.body;
+  console.log("Updated Evolution Config:", evolutionConfig);
   res.json({ success: true });
 });
 
-// Instance Status Proxy
+// Instance Status Proxy - Improved for better connection detection
 app.get('/api/instance/status', async (req, res) => {
   try {
-    if (!evolutionConfig) return res.status(400).json({ error: "Not configured" });
-    const status = await evolutionRequest(`instance/connectionStatus/${evolutionConfig.instanceName}`);
-    res.json(status);
+    if (!evolutionConfig || !evolutionConfig.instanceName) {
+      return res.status(400).json({ status: "NOT_CONFIGURED", error: "Missing configuration" });
+    }
+    
+    // Attempt to get instance state
+    const data = await evolutionRequest(`instance/connectionStatus/${evolutionConfig.instanceName}`);
+    // Evolution API typically returns { instance: { state: "open" } } or similar
+    res.json({ 
+      status: data.instance?.state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
+      raw: data 
+    });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("Status Check Error:", e.message);
+    res.status(500).json({ status: "ERROR", error: e.message });
   }
 });
 
-// Server-Side Broadcast
 app.post('/api/broadcast', async (req, res) => {
   const { message } = req.body;
   if (!message || !evolutionConfig) return res.status(400).json({ error: "Missing data" });
 
   res.json({ status: "started", count: contacts.length });
 
-  // Process in background
   for (const contact of contacts) {
     try {
       await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
         number: contact.jid.split('@')[0],
         text: message
       });
-      // Rate limiting
       await new Promise(r => setTimeout(r, 1500));
     } catch (e) {
       console.error(`Broadcast failed for ${contact.jid}:`, e.message);
@@ -147,19 +157,23 @@ app.post('/api/broadcast', async (req, res) => {
   }
 });
 
-// Webhook Sync
+// Webhook Sync - Robustly handles incoming messages and triggers AI replies
 app.post('/api/sync', async (req, res) => {
   try {
-    const { event, data } = req.body || {};
+    const payload = req.body || {};
+    const { event, data } = payload;
     
+    console.log(`Webhook Received: ${event}`);
+
     if (event === 'messages.upsert') {
       const message = data.messages?.[0];
+      // Only respond to incoming messages that are not from ourselves
       if (message && !message.key.fromMe) {
         const sender = message.key.remoteJid;
         const pushName = message.pushName || "Customer";
         const text = message.message?.conversation || message.message?.extendedTextMessage?.text;
 
-        // 1. Save/Update Contact Memory
+        // 1. Persist Contact
         const existingIdx = contacts.findIndex(c => c.jid === sender);
         if (existingIdx > -1) {
           contacts[existingIdx].lastInteraction = new Date();
@@ -174,7 +188,7 @@ app.post('/api/sync', async (req, res) => {
           });
         }
 
-        // 2. AI Response
+        // 2. AI Logic & Response
         if (text && evolutionConfig) {
           const { text: aiResponse, isSerious } = await generateAIResponse([{ role: 'user', content: text }], maintenance);
           
@@ -190,29 +204,34 @@ app.post('/api/sync', async (req, res) => {
             });
           }
 
+          // Send reply via Evolution API Proxy
           try {
             await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
               number: sender.split('@')[0],
-              text: aiResponse
+              text: aiResponse,
+              linkPreview: true
             });
+            console.log(`Replied to ${sender}: ${aiResponse}`);
           } catch (err) {
-            console.error("Reply failed:", err.message);
+            console.error(`Failed to send reply to ${sender}:`, err.message);
           }
         }
       }
     }
     res.status(200).json({ status: 'success' });
   } catch (webhookErr) {
-    console.error("Webhook Error:", webhookErr);
+    console.error("Webhook Processing Error:", webhookErr);
     res.status(500).json({ status: 'error' });
   }
 });
 
-// Static and Catch-all
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => {
   if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => console.log(`EcoSpot Server active on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`EcoSpot Server active on port ${PORT}`);
+  console.log(`Webhook Endpoint: http://localhost:${PORT}/api/sync (or your Render URL)`);
+});
