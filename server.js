@@ -20,7 +20,7 @@ let issues = [];
 let contacts = []; 
 let evolutionConfig = null;
 
-// --- EcoSpot ISP Constants (Shared with Frontend Logic) ---
+// --- EcoSpot ISP Constants ---
 const ECO_SPOT_INFO = {
   monthlyPlans: "Fiber: 6Mbps (1,500/=), 20Mbps (2,000/=).",
   hotspotPlans: "Vouchers: 1hr (10/=), 12hrs (30/=), 24hrs (60/=), 3 days (150/=), 1 week (280/=), 1 month (750/=).",
@@ -40,7 +40,7 @@ GUIDELINES:
 1. If user says hi/hello, greet warmly.
 2. Only provide pricing if asked.
 3. For "no internet": Suggest 30-sec router restart for Fiber, or "forget network" for Hotspot.
-4. IMPORTANT: If user reports infrastructure damage or total system failure that troubleshooting can't fix, append [SERIOUS_ISSUE_DETECTED] to your response.
+4. IMPORTANT: If user reports infrastructure damage or total system failure, append [SERIOUS_ISSUE_DETECTED] to your response.
 
 CURRENT NETWORK STATUS:
 {MAINTENANCE_CONTEXT}
@@ -59,8 +59,6 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
 
   const cleanEndpoint = endpoint.replace(/^\//, '');
   const url = `${baseUrl}/${cleanEndpoint}`;
-
-  console.log(`[Evolution Proxy] ${method} ${url}`);
 
   try {
     const response = await fetch(url, {
@@ -82,17 +80,12 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     }
 
     if (!response.ok) {
-      const msg = data.message || (data.response && data.response.message ? data.response.message[0] : null) || data.error || `Evolution API returned ${response.status}`;
-      const err = new Error(msg);
-      err.status = response.status;
-      err.attemptedUrl = url;
-      err.rawResponse = text;
-      throw err;
+      throw new Error(data.message || `HTTP ${response.status}`);
     }
 
     return data;
   } catch (e) {
-    console.error(`[Evolution Error] ${e.message}`);
+    console.error(`[Evolution Request Error] ${method} ${endpoint}: ${e.message}`);
     throw e;
   }
 }
@@ -127,7 +120,7 @@ async function generateAIResponse(history, maintenanceRecords) {
     return { text: cleanText, isSerious };
   } catch (e) {
     console.error("[AI Generation Error]", e);
-    return { text: "Pole! Our AI assistant is currently updating. Please try again in a few minutes.", isSerious: false };
+    return { text: "Pole! Our AI assistant is taking a short break. Please try again.", isSerious: false };
   }
 }
 
@@ -149,6 +142,7 @@ app.post('/api/issues', (req, res) => {
 
 app.post('/api/config', (req, res) => {
   evolutionConfig = req.body;
+  console.log("[Config] Server configuration updated.");
   res.json({ success: true });
 });
 
@@ -163,11 +157,7 @@ app.get('/api/instance/status', async (req, res) => {
       : null;
 
     if (!myInstance) {
-      return res.json({ 
-        status: "ERROR", 
-        message: `Instance "${evolutionConfig.instanceName}" not found.`,
-        raw: instances 
-      });
+      return res.json({ status: "ERROR", message: `Instance "${evolutionConfig.instanceName}" not found.` });
     }
 
     const state = myInstance.status || myInstance.connectionStatus || myInstance.state;
@@ -198,72 +188,89 @@ app.post('/api/broadcast', async (req, res) => {
 });
 
 /**
- * WEBHOOK HANDLER: receives messages from Evolution API
+ * WEBHOOK HANDLER
  */
 app.post('/api/sync', async (req, res) => {
   try {
     const payload = req.body || {};
-    const { event, data } = payload;
+    console.log(`[Webhook] Event Received: ${payload.event || 'Unknown'}`);
+    
+    // Check if configuration exists
+    if (!evolutionConfig) {
+      console.warn("[Webhook] Warning: Received message but server has NO Evolution configuration. Did the server restart?");
+      return res.status(200).send('NOT_CONFIGURED');
+    }
 
-    if (event === 'messages.upsert') {
-      const message = data.messages?.[0];
+    if (payload.event === 'messages.upsert') {
+      // Support different Evolution API payload formats
+      const messageObj = (payload.data?.messages ? payload.data.messages[0] : payload.data) || {};
       
-      // Ignore our own messages or empty ones
-      if (message && !message.key.fromMe) {
-        const sender = message.key.remoteJid;
-        const pushName = message.pushName || "Customer";
-        const messageText = message.message?.conversation || message.message?.extendedTextMessage?.text;
+      // Ignore if message is missing or from ourselves
+      if (!messageObj.key || messageObj.key.fromMe) {
+        return res.status(200).send('SKIPPED');
+      }
 
-        if (!messageText) return res.status(200).send('OK');
+      const senderJid = messageObj.key.remoteJid;
+      const pushName = messageObj.pushName || "Customer";
+      const messageText = messageObj.message?.conversation || 
+                         messageObj.message?.extendedTextMessage?.text || 
+                         messageObj.message?.imageMessage?.caption;
 
-        console.log(`[Webhook] Incoming from ${sender}: ${messageText}`);
+      if (!messageText) {
+        console.log(`[Webhook] Skipped message from ${senderJid} (No text content)`);
+        return res.status(200).send('NO_TEXT');
+      }
 
-        // 1. Update/Add Contact
-        const idx = contacts.findIndex(c => c.jid === sender);
-        if (idx > -1) {
-          contacts[idx].lastInteraction = new Date();
-          contacts[idx].messageCount++;
-        } else {
-          contacts.unshift({ jid: sender, name: pushName, lastInteraction: new Date(), messageCount: 1 });
-        }
+      console.log(`[Webhook] Message from ${pushName} (${senderJid}): ${messageText}`);
 
-        // 2. AI Response
-        if (evolutionConfig) {
-          const { text: aiResponse, isSerious } = await generateAIResponse(
-            [{ role: 'user', content: messageText }], 
-            maintenance
-          );
+      // Update Contact List
+      const idx = contacts.findIndex(c => c.jid === senderJid);
+      if (idx > -1) {
+        contacts[idx].lastInteraction = new Date();
+        contacts[idx].messageCount++;
+      } else {
+        contacts.unshift({ jid: senderJid, name: pushName, lastInteraction: new Date(), messageCount: 1 });
+      }
 
-          // 3. Auto-Ticket if serious
-          if (isSerious) {
-            issues.unshift({
-              id: Date.now().toString(),
-              customerPhone: sender.split('@')[0],
-              location: "WhatsApp Report",
-              description: messageText,
-              severity: 'Critical',
-              timestamp: new Date(),
-              status: 'Pending'
-            });
-          }
+      // Generate AI Response
+      const { text: aiResponse, isSerious } = await generateAIResponse(
+        [{ role: 'user', content: messageText }], 
+        maintenance
+      );
 
-          // 4. Send the message back via Evolution API
-          try {
-            await evolutionRequest(`message/sendText/${encodeURIComponent(evolutionConfig.instanceName)}`, 'POST', {
-              number: sender.split('@')[0],
-              text: aiResponse
-            });
-            console.log(`[Webhook] Sent response to ${sender}`);
-          } catch (sendErr) {
-            console.error(`[Webhook] Failed to send text: ${sendErr.message}`);
-          }
-        }
+      // Auto-Ticket if serious
+      if (isSerious) {
+        issues.unshift({
+          id: Date.now().toString(),
+          customerPhone: senderJid.split('@')[0],
+          location: "WhatsApp",
+          description: messageText,
+          severity: 'Critical',
+          timestamp: new Date(),
+          status: 'Pending'
+        });
+      }
+
+      // Send Response
+      try {
+        const targetNumber = senderJid.split('@')[0];
+        console.log(`[Webhook] Attempting to reply to ${targetNumber}...`);
+        
+        await evolutionRequest(`message/sendText/${encodeURIComponent(evolutionConfig.instanceName)}`, 'POST', {
+          number: targetNumber,
+          text: aiResponse
+        });
+        
+        console.log(`[Webhook] Reply sent successfully to ${targetNumber}`);
+      } catch (sendErr) {
+        console.error(`[Webhook] Failed to send reply: ${sendErr.message}`);
       }
     }
+    
     res.status(200).json({ status: 'success' });
-  } catch (webhookErr) {
-    console.error("[Webhook Error]", webhookErr);
-    res.status(500).json({ status: 'error' });
+  } catch (err) {
+    console.error("[Webhook Critical Error]", err);
+    res.status(200).json({ status: 'error', message: err.message }); // Always return 200 to Evolution to prevent retries
   }
 });
 
@@ -273,4 +280,10 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => console.log(`EcoSpot Server active on ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`=========================================`);
+  console.log(`EcoSpot AI Agent Server Active`);
+  console.log(`PORT: ${PORT}`);
+  console.log(`Webhook URL: /api/sync`);
+  console.log(`=========================================`);
+});
