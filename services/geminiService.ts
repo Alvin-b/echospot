@@ -14,15 +14,16 @@ export class GeminiService {
   ): Promise<{ text: string; isSerious: boolean }> {
     try {
       // Check for API Key presence
-      if (!process.env.API_KEY || process.env.API_KEY === "undefined") {
-        console.error("Gemini API Key is missing. Ensure API_KEY is set in your hosting provider's environment variables.");
+      const apiKey = process.env.API_KEY;
+      if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
+        console.error("Gemini API Key is missing or invalid.");
         return { 
-          text: "My AI connection is currently offline. Administrator: Please verify the API_KEY environment variable.", 
+          text: "System Configuration Error: The API_KEY environment variable is not set. Please go to Settings to see the setup guide.", 
           isSerious: false 
         };
       }
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
 
       // Construct maintenance context for the agent
       const maintenanceContext = maintenanceRecords.length > 0 
@@ -39,24 +40,20 @@ export class GeminiService {
       const fullSystemInstruction = SYSTEM_PROMPT.replace('{MAINTENANCE_CONTEXT}', maintenanceContext) + seriousIssueInstruction;
 
       // Formatting: Gemini API requires the first part of the contents to be from the 'user' role.
-      // We map our local roles to the API roles ('user' and 'model').
       const formattedContents = history.map(h => ({
         role: h.role === 'agent' ? 'model' : 'user',
         parts: [{ text: h.content }]
       }));
 
-      // Find the first index where role is 'user' to ensure valid sequence
+      // Ensure valid sequence: first message must be 'user'
       const firstUserIndex = formattedContents.findIndex(c => c.role === 'user');
       const validHistory = firstUserIndex !== -1 
         ? formattedContents.slice(firstUserIndex) 
         : formattedContents;
 
-      // Debugging: Log request details (excluding sensitive data)
-      console.debug("EcoSpot AI Request:", { 
-        model: 'gemini-3-flash-preview', 
-        historyLength: validHistory.length,
-        hasKey: !!process.env.API_KEY 
-      });
+      if (validHistory.length === 0) {
+        return { text: "No input provided to the AI engine.", isSerious: false };
+      }
 
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
@@ -73,15 +70,14 @@ export class GeminiService {
 
       return { text: cleanedText, isSerious };
     } catch (error: any) {
-      // Enhanced error reporting for the developer console
       console.error("Gemini AI Engine Error:", error);
       
       let errorMessage = "EcoSpot AI is currently experiencing high latency. Please try again in a moment.";
       
       if (error?.message?.includes("API key not valid")) {
-        errorMessage = "System Error: The API Key configured in the environment is invalid.";
+        errorMessage = "Configuration Error: The provided API Key is invalid or expired.";
       } else if (error?.message?.includes("quota")) {
-        errorMessage = "System Error: API rate limit reached. Please try again later.";
+        errorMessage = "System Notice: API rate limit reached. Please wait a minute.";
       }
 
       return { text: errorMessage, isSerious: false };
