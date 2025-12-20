@@ -12,11 +12,13 @@ const EvolutionConfigComp: React.FC = () => {
   });
   const [status, setStatus] = useState<'IDLE' | 'CHECKING' | 'CONNECTED' | 'ERROR' | 'DISCONNECTED' | 'NOT_CONFIGURED'>('IDLE');
   const [errorMessage, setErrorMessage] = useState('');
+  const [attemptedUrl, setAttemptedUrl] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
 
   const checkConnection = async () => {
     setStatus('CHECKING');
     setErrorMessage('');
+    setAttemptedUrl('');
     
     const result = await evolutionService.getInstanceStatus();
     
@@ -26,10 +28,11 @@ const EvolutionConfigComp: React.FC = () => {
       setStatus('NOT_CONFIGURED');
     } else if (result.status === 'DISCONNECTED') {
       setStatus('DISCONNECTED');
-      setErrorMessage(result.message || 'Instance is found but not connected.');
+      setErrorMessage(result.message || 'Instance found but not connected (ensure it is "open").');
     } else {
       setStatus('ERROR');
       setErrorMessage(result.message || 'An unexpected error occurred.');
+      if (result.url) setAttemptedUrl(result.url);
     }
   };
 
@@ -57,7 +60,7 @@ const EvolutionConfigComp: React.FC = () => {
     try {
       await dataService.saveConfig(config);
       evolutionService.setConfig(config);
-      setSaveMsg('Settings Saved locally. Verifying...');
+      setSaveMsg('Settings Saved. Verifying...');
       await checkConnection();
       setTimeout(() => setSaveMsg(''), 3000);
     } catch (e) {
@@ -140,7 +143,13 @@ const EvolutionConfigComp: React.FC = () => {
                   <p className="text-xs font-black uppercase tracking-wider">Connection Failure</p>
                 </div>
                 <p className="text-[11px] text-rose-600/90 leading-relaxed font-medium">{errorMessage}</p>
-                <p className="text-[9px] text-rose-400 mt-2 italic font-mono uppercase tracking-tighter">Check your endpoint URL and instance state.</p>
+                {attemptedUrl && (
+                  <div className="mt-3 p-2 bg-white/50 rounded-lg">
+                    <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1">Attempted Backend URL:</p>
+                    <p className="text-[10px] font-mono text-rose-700 break-all bg-white p-1 rounded border border-rose-100">{attemptedUrl}</p>
+                  </div>
+                )}
+                <p className="text-[9px] text-rose-400 mt-2 italic font-mono uppercase tracking-tighter">If the URL above looks wrong, check your Base URL input.</p>
               </div>
             )}
             
@@ -154,7 +163,7 @@ const EvolutionConfigComp: React.FC = () => {
         <ul className="space-y-3 text-xs text-slate-400">
           <li className="flex gap-3">
              <span className="text-emerald-500">✔</span>
-             <span>Evolution API URL must be reachable from the internet.</span>
+             <span>Evolution API URL must be reachable from your backend server.</span>
           </li>
           <li className="flex gap-3">
              <span className="text-emerald-500">✔</span>
@@ -162,7 +171,7 @@ const EvolutionConfigComp: React.FC = () => {
           </li>
           <li className="flex gap-3">
              <span className="text-emerald-500">✔</span>
-             <span>The Instance Name is case-sensitive.</span>
+             <span>Double check your Global API Key is correct.</span>
           </li>
         </ul>
       </div>

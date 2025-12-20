@@ -23,11 +23,18 @@ let evolutionConfig = null;
 // --- Helper: Evolution API Requester ---
 async function evolutionRequest(endpoint, method = 'GET', body = null) {
   if (!evolutionConfig || !evolutionConfig.baseUrl || !evolutionConfig.apiKey) {
-    throw new Error("Evolution API not fully configured on server.");
+    throw new Error("Evolution API configuration is incomplete.");
   }
   
+  // Clean up Base URL
   let baseUrl = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
-  // Auto-prepend https if missing
+  
+  // Common mistake: user adds '/instance' or '/v1' to the base URL manually
+  // We want to ensure the final URL is clean.
+  // Most Evolution API v1 endpoints are direct: {base}/instance/connectionStatus/{name}
+  // We'll strip common redundant path endings if the user included them
+  baseUrl = baseUrl.replace(/\/(instance|v1|v2)$/i, '');
+
   if (!baseUrl.startsWith('http')) {
     baseUrl = 'https://' + baseUrl;
   }
@@ -45,22 +52,28 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
         'apikey': evolutionConfig.apiKey
       },
       body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(10000) // 10s timeout
+      signal: AbortSignal.timeout(12000) // 12s timeout
     });
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const errorMsg = data.message || data.error || `HTTP ${response.status}`;
+      const errorMsg = data.message || data.error || `HTTP ${response.status} - Not Found or Invalid Endpoint`;
       const err = new Error(errorMsg);
       err.status = response.status;
-      err.details = data;
+      err.attemptedUrl = url;
       throw err;
     }
 
     return data;
   } catch (e) {
-    if (e.name === 'TimeoutError') throw new Error("Connection to Evolution API timed out.");
+    if (e.name === 'TimeoutError') {
+      const err = new Error("Connection to Evolution API timed out. Check if your server is awake.");
+      err.attemptedUrl = url;
+      throw err;
+    }
+    // Pass along the attempted URL for debugging in the UI
+    e.attemptedUrl = url;
     throw e;
   }
 }
@@ -139,7 +152,7 @@ app.post('/api/config', (req, res) => {
 app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig || !evolutionConfig.instanceName) {
-      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Server configuration missing." });
+      return res.status(200).json({ status: "NOT_CONFIGURED", message: "Configuration is missing instance name." });
     }
     
     const data = await evolutionRequest(`instance/connectionStatus/${evolutionConfig.instanceName}`);
@@ -147,14 +160,15 @@ app.get('/api/instance/status', async (req, res) => {
 
     res.json({ 
       status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
-      message: state === 'open' ? 'Instance is live and connected.' : `Instance state is "${state || 'unknown'}".`,
+      message: state === 'open' ? 'Connected successfully.' : `State: ${state || 'Closed/Connecting'}`,
       raw: data 
     });
   } catch (e) {
     console.error("Status Check Error:", e.message);
     res.status(200).json({ 
       status: "ERROR", 
-      message: e.message || "Failed to communicate with Evolution API." 
+      message: e.message || "Endpoint returned 404 or was unreachable.",
+      url: e.attemptedUrl
     });
   }
 });
