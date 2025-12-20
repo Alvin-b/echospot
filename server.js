@@ -26,27 +26,25 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     throw new Error("Evolution API configuration is incomplete.");
   }
   
-  // 1. Prepare the Base URL
-  // We trim and remove trailing slash, but we no longer strip /v1 or /instance 
-  // because some deployments require them to be explicitly in the base URL.
+  // 1. Prepare and Clean the Base URL
   let baseUrl = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   
   if (!baseUrl.startsWith('http')) {
     baseUrl = 'https://' + baseUrl;
   }
 
-  // 2. Prepare the full URL
+  // Ensure we don't have double slashes if the endpoint starts with /
   const cleanEndpoint = endpoint.replace(/^\//, '');
   const url = `${baseUrl}/${cleanEndpoint}`;
 
-  console.log(`[Evolution Proxy] Requesting: ${method} ${url}`);
+  console.log(`[Evolution Proxy] ${method} ${url}`);
 
   try {
     const response = await fetch(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'apikey': evolutionConfig.apiKey // Lowercase as used in your successful curl
+        'apikey': evolutionConfig.apiKey
       },
       body: body ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(15000)
@@ -61,8 +59,7 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     }
 
     if (!response.ok) {
-      // Create a descriptive error based on the response
-      const msg = data.message || data.error || `Evolution API returned HTTP ${response.status}`;
+      const msg = data.message || (data.response && data.response.message ? data.response.message[0] : null) || data.error || `Evolution API returned ${response.status}`;
       const err = new Error(msg);
       err.status = response.status;
       err.attemptedUrl = url;
@@ -73,7 +70,7 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
     return data;
   } catch (e) {
     if (e.name === 'TimeoutError') {
-      const err = new Error("Evolution API server timed out. Check your URL.");
+      const err = new Error("Evolution API server timed out.");
       err.attemptedUrl = url;
       throw err;
     }
@@ -85,7 +82,7 @@ async function evolutionRequest(endpoint, method = 'GET', body = null) {
 // --- AI Service Logic ---
 const SYSTEM_PROMPT = `
 You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP. 
-TONE: Friendly, professional, and concise. 
+TONE: Friendly, professional, and concise.
 `;
 
 async function generateAIResponse(history, maintenanceRecords) {
@@ -138,13 +135,16 @@ app.get('/api/instance/status', async (req, res) => {
     }
     
     const encodedName = encodeURIComponent(evolutionConfig.instanceName);
-    // Standard Evolution API endpoint for connection status
-    const data = await evolutionRequest(`instance/connectionStatus/${encodedName}`);
-    const state = data.instance?.state;
+    
+    // UPDATED: Using /instance/info/{instanceName} which is the standard for Evolution v2.3+
+    const data = await evolutionRequest(`instance/info/${encodedName}`);
+    
+    // Check for state in various possible response structures
+    const state = data.instance?.status || data.status || data.instance?.state || data.state;
 
     res.json({ 
       status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED',
-      message: state === 'open' ? 'Connected.' : `Instance state is: ${state || 'Closed'}`,
+      message: state === 'open' ? 'Connected.' : `Instance status is: ${state || 'unknown'}`,
       raw: data 
     });
   } catch (e) {
