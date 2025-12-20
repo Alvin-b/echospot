@@ -27,8 +27,12 @@ export class EvolutionService {
   private loadContacts() {
     const saved = localStorage.getItem('ecospot_contacts');
     if (saved) {
-      const parsed = JSON.parse(saved);
-      this.contacts = new Map(Object.entries(parsed));
+      try {
+        const parsed = JSON.parse(saved);
+        this.contacts = new Map(Object.entries(parsed));
+      } catch (e) {
+        this.contacts = new Map();
+      }
     }
   }
 
@@ -37,18 +41,20 @@ export class EvolutionService {
   }
 
   saveOrUpdateContact(jid: string, pushName: string = "Customer") {
-    const existing = this.contacts.get(jid);
+    const cleanJid = jid.split(':')[0] + (jid.includes('@') ? '' : '@s.whatsapp.net');
+    const existing = this.contacts.get(cleanJid);
+    
     if (existing) {
-      this.contacts.set(jid, {
+      this.contacts.set(cleanJid, {
         ...existing,
-        name: pushName !== "Customer" ? pushName : existing.name,
+        name: pushName !== "Customer" && pushName ? pushName : existing.name,
         lastInteraction: new Date(),
         messageCount: existing.messageCount + 1
       });
     } else {
-      this.contacts.set(jid, {
-        jid,
-        name: pushName,
+      this.contacts.set(cleanJid, {
+        jid: cleanJid,
+        name: pushName || "Valued Client",
         lastInteraction: new Date(),
         messageCount: 1
       });
@@ -86,22 +92,30 @@ export class EvolutionService {
 
   async getInstanceStatus() {
     const config = this.getConfig();
-    return this.request(`instance/connectionStatus/${config?.instanceName}`);
+    if (!config?.instanceName) return { instance: { state: 'offline' } };
+    return this.request(`instance/connectionStatus/${config.instanceName}`);
   }
 
   async fetchMessages() {
     const config = this.getConfig();
-    return this.request(`chat/findMessages/${config?.instanceName}`, 'POST', {
+    if (!config?.instanceName) return { messages: [] };
+    // We poll for unread messages as a webhook substitute
+    return this.request(`chat/findMessages/${config.instanceName}`, 'POST', {
       read: false
     });
   }
 
   async sendMessage(to: string, text: string) {
     const config = this.getConfig();
-    return this.request(`message/sendText/${config?.instanceName}`, 'POST', {
-      number: to,
+    if (!config?.instanceName) return;
+    
+    // Ensure the number is formatted correctly for Evolution
+    const number = to.split('@')[0];
+
+    return this.request(`message/sendText/${config.instanceName}`, 'POST', {
+      number: number,
       options: {
-        delay: 1200,
+        delay: 1500,
         presence: "composing",
         linkPreview: false
       },
