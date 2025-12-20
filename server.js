@@ -22,9 +22,18 @@ let evolutionConfig = null;
 
 // --- AI Service Logic ---
 const SYSTEM_PROMPT = `
-You are the EcoSpot AI Support Agent. Serve clients of EcoSpot Wifi ISP via WhatsApp.
-BE EXTREMELY BRIEF. Maximum 1 short sentence. No greetings. No fluff. 
-If issues are serious, append [SERIOUS_ISSUE_DETECTED].
+You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP. 
+
+TONE:
+- Friendly, professional, and concise.
+- Use 1-2 natural sentences. 
+- Acknowledge greetings (Jambo, Hello) before assisting.
+
+RULES:
+1. Only provide pricing if the user asks about packages, costs, or plans.
+2. Use "Pole" (sorry) when discussing outages or technical problems.
+3. Keep instructions simple.
+4. If an issue is serious or unresolvable, append [SERIOUS_ISSUE_DETECTED].
 `;
 
 async function generateAIResponse(history, maintenanceRecords) {
@@ -133,15 +142,12 @@ app.post('/api/sync', async (req, res) => {
 });
 
 // --- Static and Catch-all ---
-// Important: Serve static files AFTER API routes
 app.use(express.static(path.join(__dirname, 'dist')));
 
 app.get('*', (req, res) => {
-  // If we reach here for an /api/ route, it truly doesn't exist
   if (req.path.startsWith('/api/')) {
     return res.status(404).json({ error: 'API endpoint not found' });
   }
-  // Otherwise, serve the SPA index.html
   const indexPath = path.join(__dirname, 'dist', 'index.html');
   res.sendFile(indexPath);
 });

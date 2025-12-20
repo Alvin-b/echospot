@@ -6,18 +6,23 @@ import { ReportedIssue } from '../types';
 const IssuesLog: React.FC = () => {
   const [issues, setIssues] = useState<ReportedIssue[]>([]);
 
-  useEffect(() => {
-    setIssues(dataService.getReportedIssues());
-  }, []);
-
-  const handleStatusUpdate = (id: string, status: ReportedIssue['status']) => {
-    dataService.updateIssueStatus(id, status);
-    setIssues(dataService.getReportedIssues());
+  const loadIssues = async () => {
+    const data = await dataService.getReportedIssues();
+    setIssues(data || []);
   };
 
-  const handleDelete = (id: string) => {
-    dataService.deleteIssue(id);
-    setIssues(dataService.getReportedIssues());
+  useEffect(() => {
+    loadIssues();
+  }, []);
+
+  const handleStatusUpdate = async (id: string, status: ReportedIssue['status']) => {
+    await dataService.updateIssueStatus(id, status);
+    await loadIssues();
+  };
+
+  const handleDelete = async (id: string) => {
+    await dataService.deleteIssue(id);
+    await loadIssues();
   };
 
   return (

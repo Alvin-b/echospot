@@ -24,7 +24,11 @@ const ChatInterface: React.FC = () => {
   };
 
   useEffect(() => {
-    setMaintenance(dataService.getMaintenanceRecords());
+    const fetchMaintenance = async () => {
+      const data = await dataService.getMaintenanceRecords();
+      setMaintenance(data || []);
+    };
+    fetchMaintenance();
     scrollToBottom();
   }, [messages, isTyping]);
 

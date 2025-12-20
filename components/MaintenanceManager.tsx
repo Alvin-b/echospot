@@ -13,11 +13,16 @@ const MaintenanceManager: React.FC = () => {
     estimatedResolution: ''
   });
 
+  const loadRecords = async () => {
+    const data = await dataService.getMaintenanceRecords();
+    setRecords(data || []);
+  };
+
   useEffect(() => {
-    setRecords(dataService.getMaintenanceRecords());
+    loadRecords();
   }, []);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     const record: MaintenanceRecord = {
       id: Date.now().toString(),
       date: new Date().toISOString().split('T')[0],
@@ -26,14 +31,20 @@ const MaintenanceManager: React.FC = () => {
       status: (newRecord.status as any) || 'Scheduled',
       estimatedResolution: newRecord.estimatedResolution || 'TBD'
     };
-    dataService.saveMaintenanceRecord(record);
-    setRecords(dataService.getMaintenanceRecords());
+    await dataService.saveMaintenanceRecord(record);
+    await loadRecords();
     setShowModal(false);
+    setNewRecord({
+      area: '',
+      description: '',
+      status: 'Scheduled',
+      estimatedResolution: ''
+    });
   };
 
-  const handleDelete = (id: string) => {
-    dataService.deleteMaintenanceRecord(id);
-    setRecords(dataService.getMaintenanceRecords());
+  const handleDelete = async (id: string) => {
+    await dataService.deleteMaintenanceRecord(id);
+    await loadRecords();
   };
 
   return (
