@@ -10,5 +10,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+  },
+  preview: {
+    allowedHosts: ['echospot.onrender.com', '.onrender.com']
   }
 });
