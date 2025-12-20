@@ -1,14 +1,10 @@
 
 services:
-  - type: static
+  - type: web
     name: ecospot-isp-agent
-    env: static
-    buildCommand: "yarn install; yarn build"
-    publishPath: dist
+    env: node
+    buildCommand: "npm install; npm run build"
+    startCommand: "npm start"
     envVars:
       - key: API_KEY
         sync: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html

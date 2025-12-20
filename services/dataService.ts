@@ -1,54 +1,83 @@
 
-import { MaintenanceRecord, ReportedIssue } from '../types';
+import { MaintenanceRecord, ReportedIssue, EvolutionConfig } from '../types';
 
 export class DataService {
-  private maintenanceKey = 'ecospot_maintenance';
-  private issuesKey = 'ecospot_issues';
+  private async request(endpoint: string, method: string = 'GET', body?: any) {
+    try {
+      const response = await fetch(endpoint, {
+        method,
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
 
-  getMaintenanceRecords(): MaintenanceRecord[] {
-    const saved = localStorage.getItem(this.maintenanceKey);
-    return saved ? JSON.parse(saved) : [];
-  }
+      if (!response.ok) {
+        // If we get a 404 or other error, log it and return null instead of trying to parse JSON
+        console.warn(`DataService: Request to ${endpoint} failed with status ${response.status}`);
+        return null;
+      }
 
-  saveMaintenanceRecord(record: MaintenanceRecord) {
-    const records = this.getMaintenanceRecords();
-    const index = records.findIndex(r => r.id === record.id);
-    if (index >= 0) {
-      records[index] = record;
-    } else {
-      records.push(record);
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return await response.json();
+      }
+      
+      return null;
+    } catch (e) {
+      console.error(`DataService Error on ${endpoint}:`, e);
+      return null;
     }
-    localStorage.setItem(this.maintenanceKey, JSON.stringify(records));
   }
 
-  deleteMaintenanceRecord(id: string) {
-    const records = this.getMaintenanceRecords().filter(r => r.id !== id);
-    localStorage.setItem(this.maintenanceKey, JSON.stringify(records));
+  async getDashboardData() {
+    return this.request('/api/data');
   }
 
-  getReportedIssues(): ReportedIssue[] {
-    const saved = localStorage.getItem(this.issuesKey);
-    return saved ? JSON.parse(saved) : [];
+  async saveMaintenanceRecord(record: MaintenanceRecord) {
+    const records = await this.getMaintenanceRecords();
+    records.push(record);
+    return this.request('/api/maintenance', 'POST', records);
   }
 
-  addReportedIssue(issue: ReportedIssue) {
-    const issues = this.getReportedIssues();
-    issues.unshift(issue); // Newest first
-    localStorage.setItem(this.issuesKey, JSON.stringify(issues));
+  async getMaintenanceRecords(): Promise<MaintenanceRecord[]> {
+    const data = await this.getDashboardData();
+    return data?.maintenance || [];
   }
 
-  updateIssueStatus(id: string, status: ReportedIssue['status']) {
-    const issues = this.getReportedIssues();
+  async deleteMaintenanceRecord(id: string) {
+    const records = (await this.getMaintenanceRecords()).filter(r => r.id !== id);
+    return this.request('/api/maintenance', 'POST', records);
+  }
+
+  async getReportedIssues(): Promise<ReportedIssue[]> {
+    const data = await this.getDashboardData();
+    return data?.issues || [];
+  }
+
+  async addReportedIssue(issue: ReportedIssue) {
+    const issues = await this.getReportedIssues();
+    issues.unshift(issue);
+    return this.request('/api/issues', 'POST', issues);
+  }
+
+  async updateIssueStatus(id: string, status: ReportedIssue['status']) {
+    const issues = await this.getReportedIssues();
     const index = issues.findIndex(i => i.id === id);
     if (index >= 0) {
       issues[index].status = status;
-      localStorage.setItem(this.issuesKey, JSON.stringify(issues));
+      return this.request('/api/issues', 'POST', issues);
     }
   }
 
-  deleteIssue(id: string) {
-    const issues = this.getReportedIssues().filter(i => i.id !== id);
-    localStorage.setItem(this.issuesKey, JSON.stringify(issues));
+  async deleteIssue(id: string) {
+    const issues = (await this.getReportedIssues()).filter(i => i.id !== id);
+    return this.request('/api/issues', 'POST', issues);
+  }
+
+  async saveConfig(config: EvolutionConfig) {
+    return this.request('/api/config', 'POST', config);
   }
 }
 
