@@ -2,17 +2,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage, MessageRole, MaintenanceRecord } from '../types';
 import { geminiService } from '../services/geminiService';
-import { MOCK_MAINTENANCE } from '../constants';
+import { dataService } from '../services/dataService';
 
 const ChatInterface: React.FC = () => {
-  // In a real app, this would be fetched from a global state or API
-  const [maintenance] = useState<MaintenanceRecord[]>(MOCK_MAINTENANCE);
+  const [maintenance, setMaintenance] = useState<MaintenanceRecord[]>([]);
   
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
       role: MessageRole.AGENT,
-      content: "Jambo! EcoSpot Support here. How can I help you today? I can help with troubleshooting, plan information, or logging network issues.",
+      content: "Jambo! EcoSpot Support here. I'm connected to the live knowledge base. How can I help you today?",
       timestamp: new Date()
     }
   ]);
@@ -25,6 +24,7 @@ const ChatInterface: React.FC = () => {
   };
 
   useEffect(() => {
+    setMaintenance(dataService.getMaintenanceRecords());
     scrollToBottom();
   }, [messages, isTyping]);
 
@@ -48,7 +48,6 @@ const ChatInterface: React.FC = () => {
         content: m.content
       }));
       
-      // Fixed: Destructured the object returned by geminiService.generateResponse to fix the type mismatch.
       const { text: responseText } = await geminiService.generateResponse(history, maintenance);
       
       const agentMsg: ChatMessage = {
@@ -72,11 +71,11 @@ const ChatInterface: React.FC = () => {
           <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center font-bold text-lg">AI</div>
           <div>
             <h3 className="font-bold leading-tight">EcoSpot Agent Simulator</h3>
-            <p className="text-[10px] uppercase tracking-widest opacity-70">Evolution API Instance: Active</p>
+            <p className="text-[10px] uppercase tracking-widest opacity-70">Knowledge Base: Real-time</p>
           </div>
         </div>
         <div className="bg-emerald-500/50 px-3 py-1 rounded-full text-[10px] font-bold border border-emerald-400/30">
-          LIVE PREVIEW
+          ADMIN PREVIEW
         </div>
       </div>
 
@@ -129,7 +128,7 @@ const ChatInterface: React.FC = () => {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="Type a customer query (e.g., 'Internet is down in Rongai')"
+            placeholder="Test current Knowledge Base rules..."
             className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:bg-white transition-all outline-none"
           />
           <button
@@ -139,13 +138,6 @@ const ChatInterface: React.FC = () => {
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
           </button>
-        </div>
-        <div className="mt-3 flex items-center justify-between px-1">
-           <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Powered by Gemini 3 Flash & Evolution API</p>
-           <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></span>
-              <span className="text-[9px] font-bold text-slate-500 uppercase">Webhook Tunnel Active</span>
-           </div>
         </div>
       </div>
     </div>

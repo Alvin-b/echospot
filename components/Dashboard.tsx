@@ -1,10 +1,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { ReportedIssue, MaintenanceRecord, ChatMessage, MessageRole } from '../types';
-import { MOCK_REPORTED_ISSUES, MOCK_MAINTENANCE } from '../constants';
 import { Link } from 'react-router-dom';
 import { evolutionService } from '../services/evolutionService';
 import { geminiService } from '../services/geminiService';
+import { dataService } from '../services/dataService';
 
 const Dashboard: React.FC = () => {
   const [isLive, setIsLive] = useState(false);
@@ -24,7 +24,7 @@ const Dashboard: React.FC = () => {
     let interval: any;
     if (isLive) {
       checkInstance();
-      interval = setInterval(handleAutoReplyCycle, 5000); // 5s interval for safety
+      interval = setInterval(handleAutoReplyCycle, 5000);
     } else {
       setStatus('offline');
       setErrorMsg(null);
@@ -74,8 +74,23 @@ const Dashboard: React.FC = () => {
         history.push({ role: MessageRole.USER, content: text });
         if (history.length > 20) history.splice(0, 2);
 
-        const { text: aiResponse, isSerious } = await geminiService.generateResponse(history, MOCK_MAINTENANCE);
+        // Fetch real maintenance records for context
+        const maintenance = dataService.getMaintenanceRecords();
+        const { text: aiResponse, isSerious } = await geminiService.generateResponse(history, maintenance);
         history.push({ role: 'agent', content: aiResponse });
+
+        // If AI flagged as serious, log the issue automatically
+        if (isSerious) {
+          dataService.addReportedIssue({
+            id: Date.now().toString(),
+            customerPhone: sender.split('@')[0],
+            location: "Determined from chat",
+            description: text,
+            severity: 'Critical',
+            timestamp: new Date(),
+            status: 'Pending'
+          });
+        }
 
         await evolutionService.sendMessage(sender, aiResponse);
         setProcessedCount(prev => prev + 1);
@@ -143,8 +158,8 @@ const Dashboard: React.FC = () => {
                 <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter shadow-sm ${
                   status === 'online' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 
                   status === 'error' ? 'bg-red-50 text-red-600 border border-red-100' :
-                  status === 'loading' ? 'bg-slate-50 text-slate-400 border border-slate-100 animate-pulse' :
-                  'bg-slate-50 text-slate-400 border border-slate-100'
+                  status === 'loading' ? 'bg-slate-50 text-slate-400 border-slate-100 animate-pulse' :
+                  'bg-slate-50 text-slate-400 border-slate-100'
                 }`}>
                   {status}
                 </span>
@@ -155,9 +170,7 @@ const Dashboard: React.FC = () => {
                   <div className="p-4 bg-red-50 rounded-2xl border border-red-100 mb-2">
                     <p className="text-[9px] font-black text-red-700 uppercase tracking-widest mb-1">Last Error</p>
                     <p className="text-[10px] text-red-600 font-medium leading-tight">
-                      {errorMsg?.includes('CORS') 
-                        ? 'CORS Error: Evolution API rejected the connection from this domain. Check settings.' 
-                        : errorMsg}
+                      {errorMsg}
                     </p>
                     <Link to="/settings" className="inline-block mt-2 text-[9px] font-black text-red-800 underline uppercase tracking-widest">Fix in Settings →</Link>
                   </div>

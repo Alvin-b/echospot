@@ -1,8 +1,25 @@
 
-import React from 'react';
-import { MOCK_REPORTED_ISSUES } from '../constants';
+import React, { useState, useEffect } from 'react';
+import { dataService } from '../services/dataService';
+import { ReportedIssue } from '../types';
 
 const IssuesLog: React.FC = () => {
+  const [issues, setIssues] = useState<ReportedIssue[]>([]);
+
+  useEffect(() => {
+    setIssues(dataService.getReportedIssues());
+  }, []);
+
+  const handleStatusUpdate = (id: string, status: ReportedIssue['status']) => {
+    dataService.updateIssueStatus(id, status);
+    setIssues(dataService.getReportedIssues());
+  };
+
+  const handleDelete = (id: string) => {
+    dataService.deleteIssue(id);
+    setIssues(dataService.getReportedIssues());
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -12,7 +29,6 @@ const IssuesLog: React.FC = () => {
         </div>
         <div className="flex gap-2">
            <button className="bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-xl text-sm font-bold hover:bg-slate-50 transition-all">Export CSV</button>
-           <button className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-emerald-700 transition-all">Mark All Read</button>
         </div>
       </div>
 
@@ -21,19 +37,19 @@ const IssuesLog: React.FC = () => {
           <thead>
             <tr className="bg-slate-50 border-b border-slate-100">
               <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Customer</th>
-              <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Location</th>
-              <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Issue Description</th>
+              <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Context Info</th>
+              <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Reported Content</th>
               <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Severity</th>
               <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Status</th>
               <th className="px-6 py-4 text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-50">
-            {MOCK_REPORTED_ISSUES.map((issue) => (
+            {issues.map((issue) => (
               <tr key={issue.id} className="hover:bg-slate-50 transition-colors">
                 <td className="px-6 py-4">
                   <div className="font-bold text-slate-900 text-sm">{issue.customerPhone}</div>
-                  <div className="text-[10px] text-slate-400">{issue.timestamp.toLocaleString()}</div>
+                  <div className="text-[10px] text-slate-400">{new Date(issue.timestamp).toLocaleString()}</div>
                 </td>
                 <td className="px-6 py-4">
                   <div className="text-sm text-slate-600 font-medium">{issue.location}</div>
@@ -52,26 +68,28 @@ const IssuesLog: React.FC = () => {
                   </span>
                 </td>
                 <td className="px-6 py-4">
-                   <div className="flex items-center gap-1.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${
-                        issue.status === 'Pending' ? 'bg-amber-500' : 
-                        issue.status === 'Acknowledged' ? 'bg-blue-500' : 'bg-emerald-500'
-                      }`}></span>
-                      <span className="text-xs font-semibold text-slate-700">{issue.status}</span>
-                   </div>
+                   <select 
+                    value={issue.status}
+                    onChange={(e) => handleStatusUpdate(issue.id, e.target.value as any)}
+                    className="bg-transparent text-xs font-semibold text-slate-700 outline-none"
+                   >
+                     <option value="Pending">Pending</option>
+                     <option value="Acknowledged">Acknowledged</option>
+                     <option value="Resolved">Resolved</option>
+                   </select>
                 </td>
                 <td className="px-6 py-4 text-right">
-                  <button className="text-emerald-600 hover:text-emerald-700 text-sm font-bold">Manage</button>
+                  <button onClick={() => handleDelete(issue.id)} className="text-rose-600 hover:text-rose-700 text-sm font-bold">Delete</button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {MOCK_REPORTED_ISSUES.length === 0 && (
-          <div className="p-12 text-center">
+        {issues.length === 0 && (
+          <div className="p-24 text-center">
             <div className="text-4xl mb-4">🎉</div>
             <h3 className="text-lg font-bold text-slate-800">No issues to show</h3>
-            <p className="text-slate-500 text-sm">Your AI agent is handling everything smoothly.</p>
+            <p className="text-slate-500 text-sm">Real customer reports flagged by the AI will appear here.</p>
           </div>
         )}
       </div>
@@ -84,7 +102,6 @@ const IssuesLog: React.FC = () => {
               <p className="text-xs text-slate-400">Issues are piped directly from Evolution API webhooks as they happen.</p>
            </div>
         </div>
-        <button className="w-full md:w-auto bg-emerald-500 px-6 py-3 rounded-xl font-bold hover:bg-emerald-400 transition-colors">Setup Custom Webhooks</button>
       </div>
     </div>
   );
