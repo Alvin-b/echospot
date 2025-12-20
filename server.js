@@ -17,8 +17,29 @@ app.use(express.json());
 // --- Server-Side State ---
 let maintenance = [];
 let issues = [];
-let contacts = [];
+let contacts = []; // Persistent memory of customers
 let evolutionConfig = null;
+
+// --- Helper: Evolution API Requester ---
+async function evolutionRequest(endpoint, method = 'GET', body = null) {
+  if (!evolutionConfig) throw new Error("Evolution API not configured on server.");
+  
+  const url = `${evolutionConfig.baseUrl.replace(/\/$/, '')}/${endpoint.replace(/^\//, '')}`;
+  const response = await fetch(url, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': evolutionConfig.apiKey
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Evolution API Error: ${response.status} - ${err}`);
+  }
+  return response.json();
+}
 
 // --- AI Service Logic ---
 const SYSTEM_PROMPT = `
@@ -38,10 +59,7 @@ RULES:
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    console.error("AI Server Error: API_KEY missing from environment.");
-    return { text: "AI Configuration Missing. Pole.", isSerious: false };
-  }
+  if (!apiKey) return { text: "AI Key missing on server. Pole.", isSerious: false };
 
   const ai = new GoogleGenAI({ apiKey });
   const maintenanceContext = maintenanceRecords.length > 0 
@@ -66,42 +84,97 @@ async function generateAIResponse(history, maintenanceRecords) {
       isSerious: text.includes("[SERIOUS_ISSUE_DETECTED]") 
     };
   } catch (e) {
-    console.error("AI Error generating response:", e);
+    console.error("AI Error:", e);
     return { text: "EcoSpot AI is momentarily offline. Pole.", isSerious: false };
   }
 }
 
 // --- API Routes ---
+
+// Get all dashboard data including contacts
 app.get('/api/data', (req, res) => {
   res.json({ maintenance, issues, contacts, config: evolutionConfig });
 });
 
+// Maintenance Management
 app.post('/api/maintenance', (req, res) => {
   maintenance = req.body || [];
   res.json({ success: true });
 });
 
+// Issue Management
 app.post('/api/issues', (req, res) => {
   issues = req.body || [];
   res.json({ success: true });
 });
 
+// Config Management
 app.post('/api/config', (req, res) => {
   evolutionConfig = req.body;
   res.json({ success: true });
 });
 
+// Instance Status Proxy
+app.get('/api/instance/status', async (req, res) => {
+  try {
+    if (!evolutionConfig) return res.status(400).json({ error: "Not configured" });
+    const status = await evolutionRequest(`instance/connectionStatus/${evolutionConfig.instanceName}`);
+    res.json(status);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Server-Side Broadcast
+app.post('/api/broadcast', async (req, res) => {
+  const { message } = req.body;
+  if (!message || !evolutionConfig) return res.status(400).json({ error: "Missing data" });
+
+  res.json({ status: "started", count: contacts.length });
+
+  // Process in background
+  for (const contact of contacts) {
+    try {
+      await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
+        number: contact.jid.split('@')[0],
+        text: message
+      });
+      // Rate limiting
+      await new Promise(r => setTimeout(r, 1500));
+    } catch (e) {
+      console.error(`Broadcast failed for ${contact.jid}:`, e.message);
+    }
+  }
+});
+
+// Webhook Sync
 app.post('/api/sync', async (req, res) => {
   try {
     const { event, data } = req.body || {};
-    console.log(`Webhook Event: ${event}`);
-
+    
     if (event === 'messages.upsert') {
       const message = data.messages?.[0];
       if (message && !message.key.fromMe) {
         const sender = message.key.remoteJid;
+        const pushName = message.pushName || "Customer";
         const text = message.message?.conversation || message.message?.extendedTextMessage?.text;
 
+        // 1. Save/Update Contact Memory
+        const existingIdx = contacts.findIndex(c => c.jid === sender);
+        if (existingIdx > -1) {
+          contacts[existingIdx].lastInteraction = new Date();
+          contacts[existingIdx].messageCount++;
+          if (pushName !== "Customer") contacts[existingIdx].name = pushName;
+        } else {
+          contacts.unshift({
+            jid: sender,
+            name: pushName,
+            lastInteraction: new Date(),
+            messageCount: 1
+          });
+        }
+
+        // 2. AI Response
         if (text && evolutionConfig) {
           const { text: aiResponse, isSerious } = await generateAIResponse([{ role: 'user', content: text }], maintenance);
           
@@ -112,44 +185,34 @@ app.post('/api/sync', async (req, res) => {
               description: text,
               severity: 'Critical',
               timestamp: new Date(),
-              status: 'Pending'
+              status: 'Pending',
+              location: 'WhatsApp'
             });
           }
 
           try {
-            const replyResponse = await fetch(`${evolutionConfig.baseUrl}/message/sendText/${evolutionConfig.instanceName}`, {
-              method: 'POST',
-              headers: { 
-                'Content-Type': 'application/json', 
-                'apikey': evolutionConfig.apiKey 
-              },
-              body: JSON.stringify({ number: sender.split('@')[0], text: aiResponse })
+            await evolutionRequest(`message/sendText/${evolutionConfig.instanceName}`, 'POST', {
+              number: sender.split('@')[0],
+              text: aiResponse
             });
-            if (!replyResponse.ok) {
-                console.error(`Evolution API reply failed with status ${replyResponse.status}`);
-            }
           } catch (err) {
-            console.error("Failed to fetch Evolution API for reply:", err.message);
+            console.error("Reply failed:", err.message);
           }
         }
       }
     }
     res.status(200).json({ status: 'success' });
   } catch (webhookErr) {
-    console.error("Critical Webhook Error:", webhookErr);
+    console.error("Webhook Error:", webhookErr);
     res.status(500).json({ status: 'error' });
   }
 });
 
-// --- Static and Catch-all ---
+// Static and Catch-all
 app.use(express.static(path.join(__dirname, 'dist')));
-
 app.get('*', (req, res) => {
-  if (req.path.startsWith('/api/')) {
-    return res.status(404).json({ error: 'API endpoint not found' });
-  }
-  const indexPath = path.join(__dirname, 'dist', 'index.html');
-  res.sendFile(indexPath);
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => console.log(`EcoSpot Backend Server active on port ${PORT}`));
+app.listen(PORT, () => console.log(`EcoSpot Server active on port ${PORT}`));
