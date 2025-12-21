@@ -21,7 +21,7 @@ app.use(express.json({
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cors());
 
-// --- 2. LOGGING HELPER ---
+// --- 2. LOGGING SYSTEM ---
 let webhookLogs = []; 
 function addLog(type, message, details = null) {
   const log = {
@@ -45,38 +45,33 @@ app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
     bodyContent = `RAW: ${req.rawBody}`;
   }
   const preview = bodyContent.substring(0, 4000);
-  addLog('INFO', `Request Received: ${req.path}`, {
+  addLog('INFO', `Webhook Inbound: ${req.path}`, {
     method: req.method,
-    headers: { 'content-type': req.headers['content-type'] },
     body: preview + (bodyContent.length > 4000 ? '...' : '')
   });
   next();
 });
 
-// --- 4. SERVER STATE & AI LOGIC ---
+// --- 4. SERVER STATE ---
 let maintenance = [];
 let issues = [];
 let contacts = []; 
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-const SYSTEM_PROMPT = `Role: EcoSpot Kenya. 
-Rule: Max 1 sentence. No greetings/thanks. 
-Fiber: 6Mbps-1500, 20Mbps-2000. 
-Hotspot: 1hr-10, 24hr-60. 
-Paybill: 400200 (Acc:Phone). 
-Offline: LOS red light status? 
-Slow: Restart router.
-State: {MAINTENANCE_STATUS}`;
-
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  if (!apiKey || apiKey === "undefined") return { text: "System Error: Missing API Key.", isSerious: false };
+  if (!apiKey || apiKey === "undefined") {
+    addLog('ERROR', 'AI Error: Missing API Key in environment variables.');
+    return { text: "System Configuration Error.", isSerious: false };
+  }
   
   const ai = new GoogleGenAI({ apiKey });
   const maintenanceText = maintenanceRecords.length > 0 
     ? maintenanceRecords.map(m => `${m.area} (${m.status})`).join(', ')
     : "Operational.";
+
+  const SYSTEM_PROMPT = `Role: EcoSpot Kenya. Rule: Max 1 sentence. No greetings. Paybill: 400200. State: ${maintenanceText}`;
 
   try {
     const response = await ai.models.generateContent({
@@ -86,25 +81,29 @@ async function generateAIResponse(history, maintenanceRecords) {
         parts: [{ text: h.content }]
       })),
       config: { 
-        systemInstruction: SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText),
+        systemInstruction: SYSTEM_PROMPT,
         temperature: 0.1, 
-        maxOutputTokens: 100, 
-        thinkingConfig: { thinkingBudget: 0 } 
+        maxOutputTokens: 100
       }
     });
     return { text: (response.text || "").trim(), isSerious: false };
   } catch (e) {
+    addLog('ERROR', `Gemini API Error: ${e.message}`);
     return { text: "Service temporarily delayed.", isSerious: false };
   }
 }
 
 async function callEvolution(endpoint, method, body) {
-  if (!evolutionConfig) return null;
+  if (!evolutionConfig) {
+    addLog('ERROR', 'Evolution Call Failed: No configuration found.');
+    return null;
+  }
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
   const url = `${base}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 
   try {
+    addLog('INFO', `Attempting Evolution API Request`, { url, method, endpoint });
     const res = await fetch(url, {
       method,
       headers: { 
@@ -116,13 +115,14 @@ async function callEvolution(endpoint, method, body) {
     });
     return res;
   } catch (e) {
+    addLog('ERROR', `Network Error calling Evolution API`, { url, error: e.message });
     throw e;
   }
 }
 
-// --- 5. DASHBOARD ROUTES ---
+// --- 5. ROUTES ---
 app.get('/api/data', (req, res) => res.json({ maintenance, issues, contacts, config: evolutionConfig }));
-app.get('/api/logs', (req, res) => res.json(webhookLogs));
+app.get('/api/logs', (req, res) => res.json(webhookLogs.slice(0, 50)));
 app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
 app.post('/api/issues', (req, res) => { issues = req.body || []; res.json({ success: true }); });
 app.post('/api/config', (req, res) => { evolutionConfig = req.body; res.json({ success: true }); });
@@ -137,106 +137,88 @@ app.get('/api/instance/status', async (req, res) => {
       const isConnected = ['open', 'connected'].includes(String(state).toLowerCase());
       return res.json({ status: isConnected ? 'CONNECTED' : 'DISCONNECTED', state: state });
     }
-    res.json({ status: "ERROR", message: "Instance check failed." });
+    const err = await response?.text();
+    res.json({ status: "ERROR", message: "API Check Failed", details: err });
   } catch (e) { res.json({ status: "ERROR", message: e.message }); }
 });
 
-// --- 6. WEBHOOK HANDLER ---
+// --- 6. WEBHOOK LOGIC ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const payload = req.body || {};
-  res.status(200).send('ACK'); // Immediate ACK
+  res.status(200).send('ACK');
 
-  // Log specific event detection
   const eventName = payload.event || 'none';
-  addLog('INFO', `Processing Event: ${eventName}`);
-
   const isMsgEvent = eventName.toLowerCase().includes('messages.upsert') || req.path.includes('messages-upsert');
-  if (!isMsgEvent) {
-    if (eventName !== 'test') addLog('INFO', `Ignored non-message event: ${eventName}`);
-    return;
-  }
+  if (!isMsgEvent) return;
 
-  // 1. Extract the core message object
   const messageData = payload.data || {};
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
   if (!messageObj.key) {
-    addLog('ERROR', 'Payload structure mismatch: No "key" found in payload.data.');
+    addLog('ERROR', 'Malformed Webhook: No message key found.');
     return;
   }
 
-  // 2. Identify the User (remoteJidAlt is priority for phone number)
   const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
-  
-  // 3. Extract Text (conversation is priority for simple messages)
   const msgContent = messageObj.message || {};
-  const text = msgContent.conversation || 
-               msgContent.extendedTextMessage?.text || 
-               messageObj.conversation || 
-               messageObj.text || 
-               '';
+  const text = msgContent.conversation || msgContent.extendedTextMessage?.text || messageObj.text || '';
 
-  // DEBUG LOGS FOR USER
-  addLog('WEBHOOK', `Extraction Debug`, {
-    remoteJidAlt: messageObj.key.remoteJidAlt || 'MISSING',
-    remoteJid: messageObj.key.remoteJid || 'MISSING',
-    conversationField: msgContent.conversation || 'MISSING',
-    finalJidToUse: jid,
-    finalTextToProcess: text
-  });
-
-  if (!jid || !text || text.trim().length === 0) {
-    addLog('INFO', 'Skipped: Missing identity (JID) or message content (Text).', { jid, textDetected: !!text });
+  if (!jid || !text) {
+    addLog('INFO', 'Incomplete message data, skipping processing.');
     return;
   }
 
-  // Handle status/outgoing
-  if (messageObj.status && messageObj.status !== 'PENDING') return;
+  // Filter Outgoing
   if (messageObj.key.fromMe === true) return;
 
   if (!evolutionConfig) {
-    addLog('ERROR', 'Reply Aborted: No Evolution Config found in system.');
+    addLog('ERROR', 'Cannot process message: Evolution API settings missing.');
     return;
   }
 
-  // Manage Memory
+  addLog('WEBHOOK', `Message Received from ${jid}`, { text });
+
+  // History Management
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 6) history.shift();
+  if (history.length > 4) history.shift();
 
   try {
     const targetNumber = jid.split('@')[0];
-    addLog('INFO', `Routing response to target number: ${targetNumber}`);
     
-    // Send Presence
+    // Typing indicator
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
-      number: targetNumber, 
-      presence: 'composing' 
+      number: targetNumber, presence: 'composing' 
     });
 
-    // AI Response
+    // AI Generation
+    addLog('INFO', `Requesting Gemini Response for ${targetNumber}`);
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
 
-    // Send Message
-    addLog('INFO', `Calling Evolution sendText for: ${targetNumber}`);
+    // Send Result
+    addLog('INFO', `Sending AI Response to Evolution...`);
     const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: targetNumber, 
       text: aiResponse 
     });
 
     if (sendResult && sendResult.ok) {
-      addLog('SUCCESS', `Replied to ${targetNumber} successfully.`);
+      addLog('SUCCESS', `Message sent to ${targetNumber} successfully.`);
     } else {
-      const err = await sendResult?.text();
-      addLog('ERROR', `Evolution API rejected sendText`, { status: sendResult?.status, error: err });
+      const errText = await sendResult?.text();
+      addLog('ERROR', `Evolution API rejected the message!`, { 
+        status: sendResult?.status, 
+        responseBody: errText,
+        attemptedNumber: targetNumber
+      });
     }
   } catch (e) {
-    addLog('ERROR', `Unexpected Exception during reply: ${e.message}`);
+    addLog('ERROR', `Critical processing exception: ${e.message}`);
   }
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
-app.listen(PORT, () => console.log(`EcoSpot Active on Port ${PORT}`));
+app.listen(PORT, () => console.log(`EcoSpot Server Ready on Port ${PORT}`));
