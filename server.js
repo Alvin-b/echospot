@@ -77,7 +77,10 @@ async function generateAIResponse(history, maintenanceRecords) {
         parts: [{ text: h.content }]
       })),
       config: { 
-        systemInstruction: SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText),
+        // Syncing with both possible tags to be safe
+        systemInstruction: SYSTEM_PROMPT
+          .replace('{MAINTENANCE_STATUS}', maintenanceText)
+          .replace('{MAINTENANCE_CONTEXT}', maintenanceText),
         temperature: 0.1, 
         maxOutputTokens: 100, 
         thinkingConfig: { thinkingBudget: 0 } 
@@ -93,33 +96,28 @@ async function generateAIResponse(history, maintenanceRecords) {
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) return null;
   
-  // Clean Base URL: remove trailing slash, ensure https
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
   
-  // Clean Endpoint: ensure starts with slash
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const url = `${base}${cleanEndpoint}`;
 
-  addLog('INFO', `Outbound to Evolution: ${method} ${cleanEndpoint}`, { url });
+  addLog('INFO', `Request: ${method} ${cleanEndpoint}`);
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
     const res = await fetch(url, {
       method,
       headers: { 
         'Content-Type': 'application/json', 
-        'apikey': evolutionConfig.apiKey.trim() 
+        'apikey': evolutionConfig.apiKey.trim(),
+        // Adding User-Agent to prevent Cloudflare from blocking Node fetch
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal
+      body: body ? JSON.stringify(body) : undefined
     });
-    clearTimeout(timeout);
     return res;
   } catch (e) {
-    addLog('ERROR', `Network Failure calling Evolution: ${e.message}`, { url });
+    addLog('ERROR', `Network Error: ${e.message}`, { url });
     throw e;
   }
 }
@@ -135,38 +133,60 @@ app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
     
-    const response = await callEvolution(`/instance/connectionStatus/${evolutionConfig.instanceName}`, 'GET');
+    // Attempt 1: Direct connection status
+    let response = await callEvolution(`/instance/connectionStatus/${evolutionConfig.instanceName}`, 'GET');
     
     if (!response || !response.ok) {
-        const errText = await response?.text();
-        return res.json({ status: "ERROR", message: "API Unreachable", raw: errText, url: response?.url });
+        // Attempt 2: Fallback to listing instances (sometimes connectionStatus 404s on certain versions)
+        addLog('INFO', `Direct status check failed (${response?.status}). Trying fallback check...`);
+        const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
+        
+        if (!listResponse || !listResponse.ok) {
+           const errText = await listResponse?.text();
+           return res.json({ 
+             status: "ERROR", 
+             message: `API returned ${listResponse?.status || 'no response'}`, 
+             raw: errText, 
+             url: listResponse?.url 
+           });
+        }
+        
+        const instances = await listResponse.json();
+        const mine = Array.isArray(instances) 
+          ? instances.find(i => i.instanceName === evolutionConfig.instanceName || i.name === evolutionConfig.instanceName)
+          : instances.instance?.instanceName === evolutionConfig.instanceName ? instances.instance : null;
+
+        if (mine) {
+          return res.json({ 
+            status: mine.status === 'open' ? 'CONNECTED' : 'DISCONNECTED', 
+            state: mine.status 
+          });
+        } else {
+          return res.json({ status: 'ERROR', message: `Instance "${evolutionConfig.instanceName}" not found on server.` });
+        }
     }
     
     const statusData = await response.json();
-    const state = statusData?.instance?.state || statusData?.state;
+    const state = statusData?.instance?.state || statusData?.state || statusData?.status;
     
-    if (state === 'open') {
+    if (state === 'open' || state === 'CONNECTED') {
         res.json({ status: 'CONNECTED', state });
     } else {
         res.json({ status: 'DISCONNECTED', state: state || 'unknown' });
     }
   } catch (e) { 
-    res.json({ status: "ERROR", message: `Network: ${e.message}` }); 
+    res.json({ status: "ERROR", message: `Connection Failed: ${e.message}` }); 
   }
 });
 
 // --- WEBHOOK LISTENER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
-  // Acknowledge IMMEDIATELY to Evolution API (within < 2s)
   res.status(200).send('ACK');
 
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   const payload = req.body || {};
 
-  if (payload.event !== 'messages.upsert') {
-    if (payload.event) addLog('INFO', `Event from ${ip}: ${payload.event}`);
-    return;
-  }
+  if (payload.event !== 'messages.upsert') return;
 
   const data = payload.data || {};
   const message = (data.messages ? data.messages[0] : data) || {};
@@ -186,7 +206,6 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   history.push({ role: 'user', content: text });
   if (history.length > 6) history.shift();
 
-  // Async processing after ACK
   try {
     await callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
       number: jid.split('@')[0],
@@ -203,7 +222,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     
     addLog('SUCCESS', `Replied to ${jid}`);
   } catch (e) {
-    addLog('ERROR', `Webhook processing failed: ${e.message}`);
+    addLog('ERROR', `Response failed: ${e.message}`);
   }
 });
 

@@ -33,10 +33,10 @@ const EvolutionConfigComp: React.FC = () => {
       } else if (result.status === 'DISCONNECTED') {
         setStatus('DISCONNECTED');
         setStateInfo(result.state?.toUpperCase() || 'UNKNOWN');
-        setErrorMessage(`Instance state is "${result.state}". Open Evolution Dashboard to scan QR.`);
+        setErrorMessage(`Instance exists but is NOT connected. State: "${result.state}". Please scan QR code in Evolution Dashboard.`);
       } else {
         setStatus('ERROR');
-        setErrorMessage(result.message || 'API Unreachable. Verify URL and Global Key.');
+        setErrorMessage(result.message || 'API Unreachable. Verify the Global Key and Base URL.');
         if (result.url) setAttemptedUrl(result.url);
       }
     } catch (e: any) {
@@ -167,7 +167,11 @@ const EvolutionConfigComp: React.FC = () => {
           </li>
           <li className="flex gap-3">
              <span className="text-emerald-500">2.</span>
-             <span>Ensure the <b>Global API Key</b> is correct. It is found in your Evolution `.env` file as `AUTHENTICATION_API_KEY`.</span>
+             <span>Ensure the <b>Global API Key</b> is correct. This is the <code>rnMjgA...</code> key from your <code>.env</code>.</span>
+          </li>
+          <li className="flex gap-3">
+             <span className="text-emerald-500">3.</span>
+             <span>If you get <b>404</b>, make sure the <b>Instance Name</b> matches exactly what you created.</span>
           </li>
         </ul>
       </div>
