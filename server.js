@@ -11,7 +11,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- 1. CRITICAL: BODY PARSERS MUST BE FIRST ---
+// --- 1. BODY PARSERS ---
 app.use(express.json({
   limit: '10mb',
   verify: (req, res, buf) => { 
@@ -39,31 +39,17 @@ function addLog(type, message, details = null) {
 // --- 3. REQUEST LOGGER ---
 app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
   let bodyContent = 'Empty';
-  
   if (req.body && Object.keys(req.body).length > 0) {
     bodyContent = JSON.stringify(req.body);
   } else if (req.rawBody) {
     bodyContent = `RAW: ${req.rawBody}`;
   }
-
   const preview = bodyContent.substring(0, 4000);
-  
   addLog('INFO', `Request Received: ${req.path}`, {
     method: req.method,
-    headers: {
-      'content-type': req.headers['content-type'],
-      'user-agent': req.headers['user-agent']
-    },
+    headers: { 'content-type': req.headers['content-type'] },
     body: preview + (bodyContent.length > 4000 ? '...' : '')
   });
-  next();
-});
-
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    addLog('ERROR', 'Payload is not valid JSON.', { error: err.message, raw: req.rawBody });
-    return res.status(200).send('ACK_PARSE_ERROR'); 
-  }
   next();
 });
 
@@ -74,14 +60,14 @@ let contacts = [];
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-const SYSTEM_PROMPT = `Role: EcoSpot Support (Kenya). 
-Rule: Max one sentence. No fluff/pleasantries. 
-Fiber: 6Mbps(1500), 20Mbps(2000). 
-Hotspot: 1hr(10), 24hrs(60). 
-Paybill: 400200 (Acc: Phone No). 
-No Internet: Check if router LOS light is red. 
+const SYSTEM_PROMPT = `Role: EcoSpot Kenya. 
+Rule: Max 1 sentence. No greetings/thanks. 
+Fiber: 6Mbps-1500, 20Mbps-2000. 
+Hotspot: 1hr-10, 24hr-60. 
+Paybill: 400200 (Acc:Phone). 
+Offline: LOS red light status? 
 Slow: Restart router.
-Status: {MAINTENANCE_STATUS}`;
+State: {MAINTENANCE_STATUS}`;
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
@@ -113,10 +99,7 @@ async function generateAIResponse(history, maintenanceRecords) {
 }
 
 async function callEvolution(endpoint, method, body) {
-  if (!evolutionConfig) {
-    addLog('ERROR', 'Evolution Config missing in memory.');
-    return null;
-  }
+  if (!evolutionConfig) return null;
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
   const url = `${base}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
@@ -147,141 +130,88 @@ app.post('/api/config', (req, res) => { evolutionConfig = req.body; res.json({ s
 app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
-    
-    const endpoints = [
-      `/instance/connectionState/${evolutionConfig.instanceName}`,
-      `/instance/connect/${evolutionConfig.instanceName}`,
-      `/instance/connectionStatus/${evolutionConfig.instanceName}`
-    ];
-
-    for (const endpoint of endpoints) {
-      try {
-        const response = await callEvolution(endpoint, 'GET');
-        if (response && response.ok) {
-          const data = await response.json();
-          const state = data?.instance?.state || data?.instance?.status || data?.state || data?.status;
-          if (state && typeof state === 'string') {
-            const isConnected = ['open', 'connected', 'CONNECTED'].includes(state.toLowerCase());
-            return res.json({ status: isConnected ? 'CONNECTED' : 'DISCONNECTED', state: state });
-          }
-        }
-      } catch (e) {}
+    const response = await callEvolution(`/instance/connectionState/${evolutionConfig.instanceName}`, 'GET');
+    if (response && response.ok) {
+      const data = await response.json();
+      const state = data?.instance?.state || data?.state;
+      const isConnected = ['open', 'connected'].includes(String(state).toLowerCase());
+      return res.json({ status: isConnected ? 'CONNECTED' : 'DISCONNECTED', state: state });
     }
-    res.json({ status: "ERROR", message: "Could not verify status." });
-  } catch (e) { 
-    res.json({ status: "ERROR", message: e.message }); 
-  }
+    res.json({ status: "ERROR", message: "Instance check failed." });
+  } catch (e) { res.json({ status: "ERROR", message: e.message }); }
 });
 
 // --- 6. WEBHOOK HANDLER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const payload = req.body || {};
-  
-  // 1. Instantly ACK to stop retries
-  res.status(200).send('ACK');
+  res.status(200).send('ACK'); // Immediate ACK
 
-  // 2. Identify Event
-  const event = (payload.event || '').toLowerCase();
-  const isMsgEvent = event.includes('messages.upsert') || 
-                    event.includes('messages_upsert') || 
-                    req.path.includes('messages-upsert');
+  const isMsgEvent = (payload.event || '').toLowerCase().includes('messages.upsert') || req.path.includes('messages-upsert');
+  if (!isMsgEvent) return;
 
-  if (!isMsgEvent) {
-    if (event !== 'test' && event !== '') addLog('INFO', `Ignored Event: ${payload.event}`);
-    return;
-  }
-
-  // 3. Extract Message Object
   const messageData = payload.data || {};
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
-  if (!messageObj.key) {
-    addLog('INFO', 'Skipped: No message key.');
-    return;
-  }
+  if (!messageObj.key) return;
+  if (messageObj.status && messageObj.status !== 'PENDING') return;
+  if (messageObj.key.fromMe === true) return;
 
-  // Handle status updates
-  if (messageObj.status && messageObj.status !== 'PENDING') {
-    addLog('INFO', `Skipped: Status Update (${messageObj.status})`);
-    return;
-  }
-
-  if (messageObj.key.fromMe === true) {
-    addLog('INFO', 'Skipped: Outgoing message.');
-    return;
-  }
-
-  // --- CRITICAL FIX: IDENTIFY THE CORRECT RECIPIENT ---
-  // Priorities: 1. remoteJidAlt (Actual Phone No), 2. remoteJid (LID/Internal), 3. Top-level sender
-  const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid || payload.sender;
+  // --- EXTRACTION: JID & TEXT ---
+  // Priority 1: remoteJidAlt (Actual Phone No), Priority 2: remoteJid (Internal ID)
+  const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
   
-  if (!jid) {
-    addLog('INFO', 'Skipped: Could not determine sender JID.');
-    return;
-  }
-
-  // 4. Extract Text Content
-  let text = '';
+  // Priority 1: conversation (Direct Text), Priority 2: extendedTextMessage
   const msg = messageObj.message || {};
-  text = msg.conversation || 
-         msg.extendedTextMessage?.text || 
-         msg.imageMessage?.caption ||
-         msg.videoMessage?.caption ||
-         messageObj.conversation || 
-         messageObj.text ||
-         '';
+  const text = msg.conversation || msg.extendedTextMessage?.text || messageObj.text || '';
 
-  if (!text && messageObj.message?.text) text = messageObj.message.text;
-
-  if (!text || text.trim().length === 0) {
-    addLog('INFO', 'Skipped: No text content found.', { from: jid });
+  if (!jid || !text || text.trim().length === 0) {
+    addLog('INFO', 'Skipped: Missing identity or message content.', { jid, textDetected: !!text });
     return;
   }
 
-  // 5. Check Config
   if (!evolutionConfig) {
-    addLog('ERROR', 'Reply Aborted: No Evolution Config.');
+    addLog('ERROR', 'Reply Aborted: No Evolution Config found.');
     return;
   }
 
-  addLog('WEBHOOK', `Processing: "${text.substring(0, 50)}..."`, { from: jid });
+  addLog('WEBHOOK', `Processing: "${text.substring(0, 30)}..." from ${jid}`);
 
-  // 6. Manage Context
+  // Manage Memory
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 8) history.shift();
+  if (history.length > 6) history.shift();
 
   try {
-    // 7. Presence (Evolution handles either the number or the JID in the 'number' field)
     const targetNumber = jid.split('@')[0];
     
+    // Send Presence
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
       number: targetNumber, 
       presence: 'composing' 
     });
 
-    // 8. Generate AI Response
+    // AI Response
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
 
-    // 9. Send Reply to the correctly identified number/JID
+    // Send Message
     const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: targetNumber, 
       text: aiResponse 
     });
 
     if (sendResult && sendResult.ok) {
-      addLog('SUCCESS', `Replied to ${targetNumber} (${jid.includes('lid') ? 'LID Route' : 'Standard Route'})`);
+      addLog('SUCCESS', `Replied to ${targetNumber}`);
     } else {
-      const errBody = await sendResult?.text();
-      addLog('ERROR', `Evolution Send Error: ${sendResult?.status}`, { response: errBody, attemptedTarget: targetNumber });
+      const err = await sendResult?.text();
+      addLog('ERROR', `Send Failed`, { status: sendResult?.status, error: err });
     }
   } catch (e) {
-    addLog('ERROR', `AI/Send Exception: ${e.message}`);
+    addLog('ERROR', `Exception: ${e.message}`);
   }
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
-app.listen(PORT, () => console.log(`EcoSpot Node Active on Port ${PORT}`));
+app.listen(PORT, () => console.log(`EcoSpot Active on Port ${PORT}`));
