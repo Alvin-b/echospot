@@ -39,38 +39,40 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// --- EcoSpot ISP System Prompt (Optimized for Efficiency) ---
+// --- EcoSpot ISP System Prompt (Ultra Efficient) ---
 const SYSTEM_PROMPT = `
 You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP in Kenya. 
-GOAL: Resolve customer issues with MINIMUM words. Be fast, be helpful.
+COMMUNICATION STYLE: Ultra-concise, technical, and fast. No fluff.
 
-EFFICIENCY RULES:
-1. First reply must be under 20 words.
-2. If they ask for plans, list ONLY the price and speed. Do not explain them.
-3. Use Kenyan local terms: "Jambo!", "Pole sana", "M-Pesa".
-4. If they have "No internet", ask: "Is the LOS light red on your router?"
+EFFICIENCY PROTOCOL:
+1. One-sentence limit for most replies.
+2. Never repeat info. 
+3. After the first "Jambo!", stop using greetings.
+4. "No internet": Ask if the router's "LOS" light is red.
+5. "Slow speeds": Tell them to restart the router and test via cable.
 
-PRICING:
+PRICING (DON'T EXPLAIN):
 - Fiber: 6Mbps (1,500/=), 20Mbps (2,000/=).
 - Hotspot: 1hr (10/=), 24hrs (60/=), Week (280/=).
-- M-Pesa: Paybill 400200.
+- M-Pesa: Paybill 400200. Account: [Phone Number].
 
 OUTAGE STATUS: {MAINTENANCE_STATUS}
 `;
 
 async function generateAIResponse(history, maintenanceRecords) {
-  const apiKey = process.env.API_KEY;
+  // Check both standard names for the API Key
+  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   
-  if (!apiKey || apiKey === "undefined") {
-    addLog('ERROR', 'CRITICAL: Server-side API_KEY is missing. Please add it to your environment variables.');
-    return { text: "System Error: The AI Agent's server key is not configured. Please contact EcoSpot Admin.", isSerious: false };
+  if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
+    addLog('ERROR', 'CRITICAL: No API Key found in process.env.API_KEY or process.env.GEMINI_API_KEY');
+    return { text: "System Error: Missing API Key. Admin needs to set GEMINI_API_KEY in environment variables.", isSerious: false };
   }
   
   const ai = new GoogleGenAI({ apiKey });
   
   const maintenanceText = maintenanceRecords.length > 0 
     ? maintenanceRecords.map(m => `${m.area} (${m.status})`).join(', ')
-    : "All regions operational.";
+    : "All systems operational.";
 
   const finalInstruction = SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText);
 
@@ -83,9 +85,9 @@ async function generateAIResponse(history, maintenanceRecords) {
       })),
       config: { 
         systemInstruction: finalInstruction,
-        temperature: 0.1, // Near-zero for extreme efficiency and consistency
-        maxOutputTokens: 150,
-        thinkingConfig: { thinkingBudget: 0 } // No reasoning delay
+        temperature: 0.1, 
+        maxOutputTokens: 100, // Reduced to force brevity
+        thinkingConfig: { thinkingBudget: 0 } 
       }
     });
     
@@ -95,8 +97,8 @@ async function generateAIResponse(history, maintenanceRecords) {
       isSerious: text.includes("[SERIOUS_ISSUE_DETECTED]") 
     };
   } catch (e) {
-    addLog('ERROR', `AI Generation Error: ${e.message}`);
-    return { text: "Pole, I am currently facing a small delay. Please try again.", isSerious: false };
+    addLog('ERROR', `AI Error: ${e.message}`);
+    return { text: "Pole, technical hitch. Try again.", isSerious: false };
   }
 }
 
@@ -131,7 +133,7 @@ app.get('/api/instance/status', async (req, res) => {
 
 // --- ENHANCED WEBHOOK LISTENER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
-  // 1. Instant Acknowledge (Speed Priority)
+  // 1. Instant Acknowledge
   res.status(200).send('ACK');
 
   const payload = req.body || {};
@@ -154,7 +156,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   history.push({ role: 'user', content: text });
   if (history.length > 4) history.shift();
 
-  addLog('WEBHOOK', `Processing: ${text.substring(0, 30)}...`, { from: jid });
+  addLog('WEBHOOK', `Inbound: ${text.substring(0, 30)}...`, { from: jid });
 
   // 2. Typing indicator
   callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
@@ -189,7 +191,10 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html
 
 app.listen(PORT, () => {
   console.log(`EcoSpot Node Active on Port ${PORT}`);
-  if (!process.env.API_KEY) {
-    console.error("WARNING: API_KEY is missing from environment variables!");
+  const keyToUse = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  if (!keyToUse) {
+    console.error("WARNING: No API Key (API_KEY or GEMINI_API_KEY) found in environment!");
+  } else {
+    console.log("SUCCESS: AI Key detected and loaded.");
   }
 });
