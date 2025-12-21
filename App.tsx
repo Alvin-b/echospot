@@ -10,6 +10,7 @@ import IssuesLog from './components/IssuesLog';
 import EvolutionConfigComp from './components/EvolutionConfig';
 import BroadcastManager from './components/BroadcastManager';
 import WebhookDebugger from './components/WebhookDebugger';
+import SystemTerminal from './components/SystemTerminal';
 
 const App: React.FC = () => {
   return (
@@ -17,6 +18,7 @@ const App: React.FC = () => {
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/terminal" element={<SystemTerminal />} />
           <Route path="/debug" element={<WebhookDebugger />} />
           <Route path="/issues" element={<IssuesLog />} />
           <Route path="/broadcast" element={<BroadcastManager />} />

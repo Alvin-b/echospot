@@ -122,7 +122,7 @@ async function callEvolution(endpoint, method, body) {
 
 // --- 5. ROUTES ---
 app.get('/api/data', (req, res) => res.json({ maintenance, issues, contacts, config: evolutionConfig }));
-app.get('/api/logs', (req, res) => res.json(webhookLogs.slice(0, 50)));
+app.get('/api/logs', (req, res) => res.json(webhookLogs.slice(0, 100)));
 app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
 app.post('/api/issues', (req, res) => { issues = req.body || []; res.json({ success: true }); });
 app.post('/api/config', (req, res) => { evolutionConfig = req.body; res.json({ success: true }); });
@@ -176,7 +176,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     return;
   }
 
-  addLog('WEBHOOK', `Message Received from ${jid}`, { text });
+  addLog('WEBHOOK', `Message Received from ${jid}`, { jid, text });
 
   // History Management
   if (!userMemory.has(jid)) userMemory.set(jid, []);
@@ -205,7 +205,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     });
 
     if (sendResult && sendResult.ok) {
-      addLog('SUCCESS', `Message sent to ${targetNumber} successfully.`);
+      addLog('SUCCESS', `Replied to ${targetNumber}`, { jid, text: aiResponse });
     } else {
       const errText = await sendResult?.text();
       addLog('ERROR', `Evolution API rejected the message!`, { 
