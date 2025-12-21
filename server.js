@@ -30,9 +30,11 @@ function addLog(type, message, details = null) {
 
 // Global Request Catcher
 app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
-  addLog('INFO', `Incoming Request: ${req.method} ${req.path}`, {
-    ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-    contentType: req.headers['content-type']
+  // Capture body for debugging
+  const bodyPreview = req.body ? JSON.stringify(req.body).substring(0, 300) : 'No Body';
+  addLog('INFO', `Request Received: ${req.path}`, {
+    method: req.method,
+    body: bodyPreview + (bodyPreview.length >= 300 ? '...' : '')
   });
   next();
 });
@@ -45,7 +47,7 @@ app.use(express.json({
 
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    addLog('ERROR', 'Malformed JSON payload received.', { error: err.message });
+    addLog('ERROR', 'Malformed JSON payload.', { error: err.message });
     return res.status(200).send('ACK_PARSE_ERROR'); 
   }
   next();
@@ -100,7 +102,7 @@ async function generateAIResponse(history, maintenanceRecords) {
 
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) {
-    console.error("Evolution Config is missing in memory!");
+    addLog('ERROR', 'Evolution Config missing in memory. Please re-save settings in Dashboard.');
     return null;
   }
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
@@ -113,8 +115,7 @@ async function callEvolution(endpoint, method, body) {
       headers: { 
         'Content-Type': 'application/json', 
         'apikey': evolutionConfig.apiKey.trim(),
-        'Accept': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+        'Accept': 'application/json'
       },
       body: body ? JSON.stringify(body) : undefined
     });
@@ -147,39 +148,16 @@ app.get('/api/instance/status', async (req, res) => {
         if (response && response.ok) {
           const data = await response.json();
           const state = data?.instance?.state || data?.instance?.status || data?.state || data?.status;
-          
           if (state && typeof state === 'string') {
             const isConnected = ['open', 'connected', 'CONNECTED'].includes(state.toLowerCase());
-            return res.json({ 
-              status: isConnected ? 'CONNECTED' : 'DISCONNECTED', 
-              state: state 
-            });
+            return res.json({ status: isConnected ? 'CONNECTED' : 'DISCONNECTED', state: state });
           }
         }
-      } catch (e) {
-        console.warn(`Endpoint ${endpoint} failed, trying next...`);
-      }
+      } catch (e) {}
     }
-
-    const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
-    if (listResponse && listResponse.ok) {
-      const instances = await listResponse.json();
-      const list = Array.isArray(instances) ? instances : (instances.instances || []);
-      const mine = list.find(i => (i.instanceName === evolutionConfig.instanceName) || (i.name === evolutionConfig.instanceName));
-
-      if (mine) {
-        const state = mine.status || mine.state || mine.connectionStatus || 'Unknown';
-        const isConnected = typeof state === 'string' && ['open', 'connected', 'CONNECTED'].includes(state.toLowerCase());
-        return res.json({ 
-          status: isConnected ? 'CONNECTED' : 'DISCONNECTED', 
-          state: state
-        });
-      }
-    }
-
-    res.json({ status: "ERROR", message: `Could not verify status of "${evolutionConfig.instanceName}". Verify URL and Global Key.` });
+    res.json({ status: "ERROR", message: "Could not verify status." });
   } catch (e) { 
-    res.json({ status: "ERROR", message: `Connection Failed: ${e.message}` }); 
+    res.json({ status: "ERROR", message: e.message }); 
   }
 });
 
@@ -187,72 +165,81 @@ app.get('/api/instance/status', async (req, res) => {
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const payload = req.body || {};
   
-  // Handle Test events
-  if (payload.event === 'test' || payload.type === 'test' || Object.keys(payload).length === 0) {
-    addLog('SUCCESS', 'Webhook verified (Test Event)');
-    return res.status(200).send('ACK');
-  }
-
-  // Acknowledge Evolution API immediately to prevent retries
+  // 1. Instantly ACK to stop retries
   res.status(200).send('ACK');
 
-  // Determine if this is a message event
-  const eventName = (payload.event || '').toLowerCase();
-  const isMessageUpsert = eventName === 'messages.upsert' || 
-                          eventName === 'messages_upsert' || 
-                          req.path.includes('messages-upsert');
+  // 2. Identify Event
+  const event = (payload.event || '').toLowerCase();
+  const isMsgEvent = event.includes('messages.upsert') || 
+                    event.includes('messages_upsert') || 
+                    req.path.includes('messages-upsert');
 
-  if (!isMessageUpsert) {
-    addLog('INFO', `Ignored Event: ${payload.event || 'Unknown'}`);
+  if (!isMsgEvent) {
+    if (event !== 'test') addLog('INFO', `Ignored Non-Message Event: ${payload.event}`);
     return;
   }
 
-  // Configuration check
-  if (!evolutionConfig) {
-    addLog('ERROR', 'Config Missing! Open Dashboard settings and click "Save & Test".');
+  // 3. Extract Message Object
+  // Evolution can send data in payload.data.messages[0] or payload.data directly
+  const messageData = payload.data || {};
+  const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
+
+  if (!messageObj.key) {
+    addLog('INFO', 'Skipped: No message key found in payload.');
     return;
   }
 
-  // Extract message data
-  const data = payload.data || {};
-  const messageObj = (data.messages ? data.messages[0] : data) || {};
-  
-  if (!messageObj.key || messageObj.key.fromMe) return;
+  if (messageObj.key.fromMe === true) {
+    addLog('INFO', 'Skipped: Message is from the agent itself.');
+    return;
+  }
 
   const jid = messageObj.key.remoteJid;
-  
-  // Exhaustive search for text content
+  if (!jid) {
+    addLog('INFO', 'Skipped: No remoteJid found.');
+    return;
+  }
+
+  // 4. Extract Text Content (Thorough search)
   const text = messageObj.message?.conversation || 
                messageObj.message?.extendedTextMessage?.text || 
-               messageObj.message?.text ||
-               messageObj.conversation ||
+               messageObj.message?.imageMessage?.caption ||
+               messageObj.message?.videoMessage?.caption ||
+               messageObj.conversation || 
+               messageObj.text ||
                '';
 
   if (!text || text.trim().length === 0) {
-    addLog('INFO', 'Received non-text message (ignored).', { jid });
+    addLog('INFO', 'Skipped: Message contains no text content.', { jid });
     return;
   }
 
-  addLog('WEBHOOK', `Msg: "${text.substring(0, 30)}..."`, { from: jid });
+  // 5. Check Config
+  if (!evolutionConfig) {
+    addLog('ERROR', 'Reply Aborted: evolutionConfig is null. Visit API Settings to re-save.');
+    return;
+  }
 
-  // History management
+  addLog('WEBHOOK', `Processing: "${text.substring(0, 40)}..."`, { from: jid });
+
+  // 6. Manage Context
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 10) history.shift();
+  if (history.length > 8) history.shift();
 
   try {
-    // 1. Show 'typing' presence
+    // 7. Typing Indicator
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
       number: jid.split('@')[0], 
       presence: 'composing' 
     });
 
-    // 2. AI Logic
+    // 8. Generate AI Response
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
 
-    // 3. Send Text
+    // 9. Send Reply
     const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: jid.split('@')[0], 
       text: aiResponse 
@@ -261,8 +248,8 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     if (sendResult && sendResult.ok) {
       addLog('SUCCESS', `Replied to ${jid.split('@')[0]}`);
     } else {
-      const errText = await sendResult?.text();
-      addLog('ERROR', `Evolution rejected reply: ${sendResult?.status}`, { raw: errText });
+      const errBody = await sendResult?.text();
+      addLog('ERROR', `Evolution rejected send: ${sendResult?.status}`, { response: errBody });
     }
   } catch (e) {
     addLog('ERROR', `Processing error: ${e.message}`);
