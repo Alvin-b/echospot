@@ -14,12 +14,14 @@ const EvolutionConfigComp: React.FC = () => {
   const [stateInfo, setStateInfo] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [attemptedUrl, setAttemptedUrl] = useState('');
+  const [rawResponse, setRawResponse] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
 
   const checkConnection = async () => {
     setStatus('CHECKING');
     setErrorMessage('');
     setAttemptedUrl('');
+    setRawResponse('');
     setStateInfo('');
     
     try {
@@ -33,15 +35,16 @@ const EvolutionConfigComp: React.FC = () => {
       } else if (result.status === 'DISCONNECTED') {
         setStatus('DISCONNECTED');
         setStateInfo(result.state?.toUpperCase() || 'UNKNOWN');
-        setErrorMessage(`Instance exists but is NOT connected. State: "${result.state}". Please scan QR code in Evolution Dashboard.`);
+        setErrorMessage(`Instance found but status is "${result.state}". Open Evolution Dashboard and scan the QR code.`);
       } else {
         setStatus('ERROR');
-        setErrorMessage(result.message || 'API Unreachable. Verify the Global Key and Base URL.');
+        setErrorMessage(result.message || 'API Unreachable. Verify URL and Global Key.');
         if (result.url) setAttemptedUrl(result.url);
+        if (result.raw) setRawResponse(result.raw);
       }
     } catch (e: any) {
       setStatus('ERROR');
-      setErrorMessage(`Network Error: ${e.message}`);
+      setErrorMessage(`Network Failure: ${e.message}`);
     }
   };
 
@@ -106,25 +109,26 @@ const EvolutionConfigComp: React.FC = () => {
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Global API Key</label>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Global API Key (rnMjgA...)</label>
             <input 
               type="password" 
               value={config.apiKey}
               onChange={(e) => setConfig({...config, apiKey: e.target.value})}
-              placeholder="Global apikey"
+              placeholder="Authentication API Key from .env"
               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
             />
           </div>
 
           <div className="space-y-2">
-            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Instance Name</label>
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">Target Instance Name</label>
             <input 
               type="text" 
               value={config.instanceName}
               onChange={(e) => setConfig({...config, instanceName: e.target.value})}
-              placeholder="e.g. echospot"
+              placeholder="e.g. echospo"
               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all"
             />
+            <p className="text-[10px] text-slate-400 italic pl-1">Must match the instance name in your Evolution Dashboard.</p>
           </div>
 
           <div className="pt-4 space-y-4">
@@ -144,9 +148,18 @@ const EvolutionConfigComp: React.FC = () => {
                 </div>
                 <p className="text-[11px] text-rose-600 leading-relaxed font-bold mb-3">{errorMessage}</p>
                 
+                {rawResponse && (
+                  <div className="mb-3">
+                    <p className="text-[9px] text-rose-400 uppercase font-black tracking-widest mb-1">Raw API Response:</p>
+                    <pre className="text-[9px] font-mono text-rose-700 break-all bg-white/50 p-2 rounded max-h-32 overflow-y-auto border border-rose-100">
+                      {typeof rawResponse === 'string' ? rawResponse : JSON.stringify(rawResponse, null, 2)}
+                    </pre>
+                  </div>
+                )}
+
                 {attemptedUrl && (
                   <div className="mt-2 pt-2 border-t border-rose-100">
-                    <p className="text-[9px] text-rose-400 uppercase font-black tracking-widest mb-1">Attempted URL Trace:</p>
+                    <p className="text-[9px] text-rose-400 uppercase font-black tracking-widest mb-1">Attempted Endpoint:</p>
                     <p className="text-[9px] font-mono text-rose-700 break-all bg-white/50 p-2 rounded">{attemptedUrl}</p>
                   </div>
                 )}
@@ -159,19 +172,19 @@ const EvolutionConfigComp: React.FC = () => {
       </div>
 
       <div className="bg-slate-900 rounded-[2.5rem] p-8 text-white">
-        <h3 className="font-bold text-lg mb-4">Fixing "API Unreachable"</h3>
+        <h3 className="font-bold text-lg mb-4">Instance Check</h3>
         <ul className="space-y-4 text-xs text-slate-400">
           <li className="flex gap-3">
-             <span className="text-emerald-500">1.</span>
-             <span>Check if your Evolution API has an SSL certificate. Use <b>https://</b> in the URL.</span>
+             <span className="text-emerald-500 font-bold">401/403:</span>
+             <span>Your <b>Global API Key</b> is likely incorrect. Re-check your Evolution <code>.env</code> file.</span>
           </li>
           <li className="flex gap-3">
-             <span className="text-emerald-500">2.</span>
-             <span>Ensure the <b>Global API Key</b> is correct. This is the <code>rnMjgA...</code> key from your <code>.env</code>.</span>
+             <span className="text-emerald-500 font-bold">404:</span>
+             <span>The <b>Base URL</b> is wrong or your Evolution version uses different routes. Ensure you use <code>https://</code>.</span>
           </li>
           <li className="flex gap-3">
-             <span className="text-emerald-500">3.</span>
-             <span>If you get <b>404</b>, make sure the <b>Instance Name</b> matches exactly what you created.</span>
+             <span className="text-emerald-500 font-bold">Cloudflare:</span>
+             <span>If you see "Just a moment..." in the raw response, Cloudflare is blocking the server. Try disabling the proxy on your Evolution subdomain.</span>
           </li>
         </ul>
       </div>

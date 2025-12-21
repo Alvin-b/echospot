@@ -12,6 +12,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
+// Robust JSON parsing for webhooks
 app.use(express.json({
   limit: '10mb',
   verify: (req, res, buf) => { req.rawBody = buf.toString(); }
@@ -39,22 +40,14 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-const SYSTEM_PROMPT = `
-You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP in Kenya. 
-COMMUNICATION STYLE: Ultra-concise, technical, and fast. No fluff.
-
-EFFICIENCY PROTOCOL:
-1. One-sentence limit for most replies.
-2. After the first "Jambo!", stop using greetings.
-3. "No internet": Ask if the router's "LOS" light is red.
-
-PRICING:
-- Fiber: 6Mbps (1,500/=), 20Mbps (2,000/=).
-- Hotspot: 1hr (10/=), 24hrs (60/=).
-- Paybill: 400200. Account: [Phone Number].
-
-STATUS: {MAINTENANCE_STATUS}
-`;
+const SYSTEM_PROMPT = `Role: EcoSpot Support (Kenya). 
+Rule: Max one sentence. No fluff/pleasantries. 
+Fiber: 6Mbps(1500), 20Mbps(2000). 
+Hotspot: 1hr(10), 24hrs(60). 
+Paybill: 400200 (Acc: Phone No). 
+No Internet: Check if router LOS light is red. 
+Slow: Restart router.
+Status: {MAINTENANCE_STATUS}`;
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
@@ -77,10 +70,7 @@ async function generateAIResponse(history, maintenanceRecords) {
         parts: [{ text: h.content }]
       })),
       config: { 
-        // Syncing with both possible tags to be safe
-        systemInstruction: SYSTEM_PROMPT
-          .replace('{MAINTENANCE_STATUS}', maintenanceText)
-          .replace('{MAINTENANCE_CONTEXT}', maintenanceText),
+        systemInstruction: SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText),
         temperature: 0.1, 
         maxOutputTokens: 100, 
         thinkingConfig: { thinkingBudget: 0 } 
@@ -96,13 +86,14 @@ async function generateAIResponse(history, maintenanceRecords) {
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) return null;
   
+  // URL NORMALIZATION (Crucial for Node fetch)
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
   
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const url = `${base}${cleanEndpoint}`;
 
-  addLog('INFO', `Request: ${method} ${cleanEndpoint}`);
+  addLog('INFO', `Evolution API Request: ${method} ${cleanEndpoint}`);
 
   try {
     const res = await fetch(url, {
@@ -110,14 +101,15 @@ async function callEvolution(endpoint, method, body) {
       headers: { 
         'Content-Type': 'application/json', 
         'apikey': evolutionConfig.apiKey.trim(),
-        // Adding User-Agent to prevent Cloudflare from blocking Node fetch
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Accept': 'application/json',
+        // High-compatibility User Agent for Cloudflare Bypass
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
       },
       body: body ? JSON.stringify(body) : undefined
     });
     return res;
   } catch (e) {
-    addLog('ERROR', `Network Error: ${e.message}`, { url });
+    addLog('ERROR', `Physical Network Error: ${e.message}`, { url });
     throw e;
   }
 }
@@ -133,46 +125,39 @@ app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
     
-    // Attempt 1: Direct connection status
-    let response = await callEvolution(`/instance/connectionStatus/${evolutionConfig.instanceName}`, 'GET');
+    // Check using fetchInstances as it's the most reliable fallback
+    const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
     
-    if (!response || !response.ok) {
-        // Attempt 2: Fallback to listing instances (sometimes connectionStatus 404s on certain versions)
-        addLog('INFO', `Direct status check failed (${response?.status}). Trying fallback check...`);
-        const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
-        
-        if (!listResponse || !listResponse.ok) {
-           const errText = await listResponse?.text();
-           return res.json({ 
-             status: "ERROR", 
-             message: `API returned ${listResponse?.status || 'no response'}`, 
-             raw: errText, 
-             url: listResponse?.url 
-           });
-        }
-        
-        const instances = await listResponse.json();
-        const mine = Array.isArray(instances) 
-          ? instances.find(i => i.instanceName === evolutionConfig.instanceName || i.name === evolutionConfig.instanceName)
-          : instances.instance?.instanceName === evolutionConfig.instanceName ? instances.instance : null;
-
-        if (mine) {
-          return res.json({ 
-            status: mine.status === 'open' ? 'CONNECTED' : 'DISCONNECTED', 
-            state: mine.status 
-          });
-        } else {
-          return res.json({ status: 'ERROR', message: `Instance "${evolutionConfig.instanceName}" not found on server.` });
-        }
+    if (!listResponse || !listResponse.ok) {
+       const errCode = listResponse?.status || 'No Response';
+       const errBody = await listResponse?.text();
+       return res.json({ 
+         status: "ERROR", 
+         message: `Server returned HTTP ${errCode}`, 
+         raw: errBody,
+         url: listResponse?.url 
+       });
     }
     
-    const statusData = await response.json();
-    const state = statusData?.instance?.state || statusData?.state || statusData?.status;
-    
-    if (state === 'open' || state === 'CONNECTED') {
-        res.json({ status: 'CONNECTED', state });
+    const instances = await listResponse.json();
+    // Support both direct array and wrapped object responses
+    const list = Array.isArray(instances) ? instances : (instances.instances || []);
+    const mine = list.find(i => 
+      (i.instanceName === evolutionConfig.instanceName) || 
+      (i.name === evolutionConfig.instanceName)
+    );
+
+    if (mine) {
+      const state = mine.status || mine.state;
+      return res.json({ 
+        status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED', 
+        state: state 
+      });
     } else {
-        res.json({ status: 'DISCONNECTED', state: state || 'unknown' });
+      return res.json({ 
+        status: 'ERROR', 
+        message: `Instance "${evolutionConfig.instanceName}" was not found in your Evolution account.` 
+      });
     }
   } catch (e) { 
     res.json({ status: "ERROR", message: `Connection Failed: ${e.message}` }); 
@@ -181,10 +166,17 @@ app.get('/api/instance/status', async (req, res) => {
 
 // --- WEBHOOK LISTENER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
+  // Acknowledge IMMEDIATELY
   res.status(200).send('ACK');
 
   const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   const payload = req.body || {};
+
+  // Handle Evolution "Test Webhook" button
+  if (payload.event === 'test' || !payload.event) {
+    addLog('SUCCESS', 'Received Webhook Test Event', { source: ip });
+    return;
+  }
 
   if (payload.event !== 'messages.upsert') return;
 
@@ -199,7 +191,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
 
   if (!text) return;
 
-  addLog('WEBHOOK', `Message from ${jid}: "${text.substring(0, 20)}..."`, { source: ip });
+  addLog('WEBHOOK', `Message: "${text.substring(0, 25)}..."`, { from: jid });
 
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
@@ -220,9 +212,9 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
       text: aiResponse
     });
     
-    addLog('SUCCESS', `Replied to ${jid}`);
+    addLog('SUCCESS', `AI Replied to ${jid}`);
   } catch (e) {
-    addLog('ERROR', `Response failed: ${e.message}`);
+    addLog('ERROR', `Failed to process reply: ${e.message}`);
   }
 });
 
@@ -233,7 +225,7 @@ app.listen(PORT, () => {
   console.log(`EcoSpot Node Active on Port ${PORT}`);
   const keyToUse = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!keyToUse) {
-    console.error("WARNING: No GEMINI_API_KEY found!");
+    console.error("WARNING: No GEMINI_API_KEY found in environment!");
   } else {
     console.log(`SUCCESS: AI Key detected (Ending: ...${keyToUse.slice(-4)})`);
   }
