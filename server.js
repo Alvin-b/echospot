@@ -146,35 +146,58 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const payload = req.body || {};
   res.status(200).send('ACK'); // Immediate ACK
 
-  const isMsgEvent = (payload.event || '').toLowerCase().includes('messages.upsert') || req.path.includes('messages-upsert');
-  if (!isMsgEvent) return;
+  // Log specific event detection
+  const eventName = payload.event || 'none';
+  addLog('INFO', `Processing Event: ${eventName}`);
 
+  const isMsgEvent = eventName.toLowerCase().includes('messages.upsert') || req.path.includes('messages-upsert');
+  if (!isMsgEvent) {
+    if (eventName !== 'test') addLog('INFO', `Ignored non-message event: ${eventName}`);
+    return;
+  }
+
+  // 1. Extract the core message object
   const messageData = payload.data || {};
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
-  if (!messageObj.key) return;
+  if (!messageObj.key) {
+    addLog('ERROR', 'Payload structure mismatch: No "key" found in payload.data.');
+    return;
+  }
+
+  // 2. Identify the User (remoteJidAlt is priority for phone number)
+  const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
+  
+  // 3. Extract Text (conversation is priority for simple messages)
+  const msgContent = messageObj.message || {};
+  const text = msgContent.conversation || 
+               msgContent.extendedTextMessage?.text || 
+               messageObj.conversation || 
+               messageObj.text || 
+               '';
+
+  // DEBUG LOGS FOR USER
+  addLog('WEBHOOK', `Extraction Debug`, {
+    remoteJidAlt: messageObj.key.remoteJidAlt || 'MISSING',
+    remoteJid: messageObj.key.remoteJid || 'MISSING',
+    conversationField: msgContent.conversation || 'MISSING',
+    finalJidToUse: jid,
+    finalTextToProcess: text
+  });
+
+  if (!jid || !text || text.trim().length === 0) {
+    addLog('INFO', 'Skipped: Missing identity (JID) or message content (Text).', { jid, textDetected: !!text });
+    return;
+  }
+
+  // Handle status/outgoing
   if (messageObj.status && messageObj.status !== 'PENDING') return;
   if (messageObj.key.fromMe === true) return;
 
-  // --- EXTRACTION: JID & TEXT ---
-  // Priority 1: remoteJidAlt (Actual Phone No), Priority 2: remoteJid (Internal ID)
-  const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
-  
-  // Priority 1: conversation (Direct Text), Priority 2: extendedTextMessage
-  const msg = messageObj.message || {};
-  const text = msg.conversation || msg.extendedTextMessage?.text || messageObj.text || '';
-
-  if (!jid || !text || text.trim().length === 0) {
-    addLog('INFO', 'Skipped: Missing identity or message content.', { jid, textDetected: !!text });
-    return;
-  }
-
   if (!evolutionConfig) {
-    addLog('ERROR', 'Reply Aborted: No Evolution Config found.');
+    addLog('ERROR', 'Reply Aborted: No Evolution Config found in system.');
     return;
   }
-
-  addLog('WEBHOOK', `Processing: "${text.substring(0, 30)}..." from ${jid}`);
 
   // Manage Memory
   if (!userMemory.has(jid)) userMemory.set(jid, []);
@@ -184,6 +207,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
 
   try {
     const targetNumber = jid.split('@')[0];
+    addLog('INFO', `Routing response to target number: ${targetNumber}`);
     
     // Send Presence
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
@@ -196,19 +220,20 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     history.push({ role: 'agent', content: aiResponse });
 
     // Send Message
+    addLog('INFO', `Calling Evolution sendText for: ${targetNumber}`);
     const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: targetNumber, 
       text: aiResponse 
     });
 
     if (sendResult && sendResult.ok) {
-      addLog('SUCCESS', `Replied to ${targetNumber}`);
+      addLog('SUCCESS', `Replied to ${targetNumber} successfully.`);
     } else {
       const err = await sendResult?.text();
-      addLog('ERROR', `Send Failed`, { status: sendResult?.status, error: err });
+      addLog('ERROR', `Evolution API rejected sendText`, { status: sendResult?.status, error: err });
     }
   } catch (e) {
-    addLog('ERROR', `Exception: ${e.message}`);
+    addLog('ERROR', `Unexpected Exception during reply: ${e.message}`);
   }
 });
 
