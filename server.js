@@ -99,7 +99,10 @@ async function generateAIResponse(history, maintenanceRecords) {
 }
 
 async function callEvolution(endpoint, method, body) {
-  if (!evolutionConfig) return null;
+  if (!evolutionConfig) {
+    console.error("Evolution Config is missing in memory!");
+    return null;
+  }
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
   const url = `${base}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
@@ -132,7 +135,6 @@ app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
     
-    // Check multiple endpoints for the state
     const endpoints = [
       `/instance/connectionState/${evolutionConfig.instanceName}`,
       `/instance/connect/${evolutionConfig.instanceName}`,
@@ -144,7 +146,6 @@ app.get('/api/instance/status', async (req, res) => {
         const response = await callEvolution(endpoint, 'GET');
         if (response && response.ok) {
           const data = await response.json();
-          // Extract state from various possible structures
           const state = data?.instance?.state || data?.instance?.status || data?.state || data?.status;
           
           if (state && typeof state === 'string') {
@@ -156,12 +157,10 @@ app.get('/api/instance/status', async (req, res) => {
           }
         }
       } catch (e) {
-        // Continue to next endpoint if this one fails
         console.warn(`Endpoint ${endpoint} failed, trying next...`);
       }
     }
 
-    // Fallback: Check list of all instances
     const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
     if (listResponse && listResponse.ok) {
       const instances = await listResponse.json();
@@ -184,37 +183,89 @@ app.get('/api/instance/status', async (req, res) => {
   }
 });
 
+// --- WEBHOOK HANDLER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const payload = req.body || {};
+  
+  // Handle Test events
   if (payload.event === 'test' || payload.type === 'test' || Object.keys(payload).length === 0) {
-    addLog('SUCCESS', 'Webhook verified successfully (Test Event)');
+    addLog('SUCCESS', 'Webhook verified (Test Event)');
     return res.status(200).send('ACK');
   }
+
+  // Acknowledge Evolution API immediately to prevent retries
   res.status(200).send('ACK');
-  if (payload.event !== 'messages.upsert') return;
 
+  // Determine if this is a message event
+  const eventName = (payload.event || '').toLowerCase();
+  const isMessageUpsert = eventName === 'messages.upsert' || 
+                          eventName === 'messages_upsert' || 
+                          req.path.includes('messages-upsert');
+
+  if (!isMessageUpsert) {
+    addLog('INFO', `Ignored Event: ${payload.event || 'Unknown'}`);
+    return;
+  }
+
+  // Configuration check
+  if (!evolutionConfig) {
+    addLog('ERROR', 'Config Missing! Open Dashboard settings and click "Save & Test".');
+    return;
+  }
+
+  // Extract message data
   const data = payload.data || {};
-  const message = (data.messages ? data.messages[0] : data) || {};
-  if (!message.key || message.key.fromMe) return;
+  const messageObj = (data.messages ? data.messages[0] : data) || {};
+  
+  if (!messageObj.key || messageObj.key.fromMe) return;
 
-  const jid = message.key.remoteJid;
-  const text = message.message?.conversation || message.message?.extendedTextMessage?.text || message.conversation;
-  if (!text) return;
+  const jid = messageObj.key.remoteJid;
+  
+  // Exhaustive search for text content
+  const text = messageObj.message?.conversation || 
+               messageObj.message?.extendedTextMessage?.text || 
+               messageObj.message?.text ||
+               messageObj.conversation ||
+               '';
 
-  addLog('WEBHOOK', `Message: "${text.substring(0, 25)}..."`, { from: jid });
+  if (!text || text.trim().length === 0) {
+    addLog('INFO', 'Received non-text message (ignored).', { jid });
+    return;
+  }
+
+  addLog('WEBHOOK', `Msg: "${text.substring(0, 30)}..."`, { from: jid });
+
+  // History management
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
   if (history.length > 10) history.shift();
 
   try {
-    await callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', { number: jid.split('@')[0], presence: 'composing' });
+    // 1. Show 'typing' presence
+    await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
+      number: jid.split('@')[0], 
+      presence: 'composing' 
+    });
+
+    // 2. AI Logic
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
-    await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { number: jid.split('@')[0], text: aiResponse });
-    addLog('SUCCESS', `AI Replied to ${jid}`);
+
+    // 3. Send Text
+    const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
+      number: jid.split('@')[0], 
+      text: aiResponse 
+    });
+
+    if (sendResult && sendResult.ok) {
+      addLog('SUCCESS', `Replied to ${jid.split('@')[0]}`);
+    } else {
+      const errText = await sendResult?.text();
+      addLog('ERROR', `Evolution rejected reply: ${sendResult?.status}`, { raw: errText });
+    }
   } catch (e) {
-    addLog('ERROR', `Failed to process reply: ${e.message}`);
+    addLog('ERROR', `Processing error: ${e.message}`);
   }
 });
 
