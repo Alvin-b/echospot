@@ -12,11 +12,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // --- 1. CRITICAL: BODY PARSERS MUST BE FIRST ---
-// This ensures req.body is populated BEFORE any logging or routing happens.
 app.use(express.json({
   limit: '10mb',
   verify: (req, res, buf) => { 
-    // Store raw body as string for debugging "No Body" issues
     req.rawBody = buf.toString(); 
   }
 }));
@@ -34,13 +32,12 @@ function addLog(type, message, details = null) {
     details
   };
   webhookLogs.unshift(log);
-  if (webhookLogs.length > 100) webhookLogs.pop();
+  if (webhookLogs.length > 200) webhookLogs.pop(); // Increased log history
   console.log(`[${type}] ${message}`);
 }
 
-// --- 3. REQUEST LOGGER (Now that body is parsed) ---
+// --- 3. REQUEST LOGGER ---
 app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
-  // Try to get body from parsed JSON, then raw text, then fallback
   let bodyContent = 'Empty';
   
   if (req.body && Object.keys(req.body).length > 0) {
@@ -49,7 +46,8 @@ app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
     bodyContent = `RAW: ${req.rawBody}`;
   }
 
-  const preview = bodyContent.substring(0, 400);
+  // INCREASED PREVIEW TO 4000 chars to avoid truncation
+  const preview = bodyContent.substring(0, 4000);
   
   addLog('INFO', `Request Received: ${req.path}`, {
     method: req.method,
@@ -57,12 +55,11 @@ app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
       'content-type': req.headers['content-type'],
       'user-agent': req.headers['user-agent']
     },
-    body: preview + (bodyContent.length > 400 ? '...' : '')
+    body: preview + (bodyContent.length > 4000 ? '...' : '')
   });
   next();
 });
 
-// Error handling for bad JSON
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
     addLog('ERROR', 'Payload is not valid JSON.', { error: err.message, raw: req.rawBody });
@@ -191,7 +188,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
                     req.path.includes('messages-upsert');
 
   if (!isMsgEvent) {
-    if (event !== 'test') addLog('INFO', `Ignored Non-Message Event: ${payload.event || 'None'}`);
+    if (event !== 'test' && event !== '') addLog('INFO', `Ignored Event Type: ${payload.event}`);
     return;
   }
 
@@ -200,42 +197,57 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
   if (!messageObj.key) {
-    addLog('INFO', 'Skipped: Payload has no standard message structure (no key).');
+    addLog('INFO', 'Skipped: Payload has no message key.');
+    return;
+  }
+
+  // Handle status updates which are not messages
+  if (messageObj.status && messageObj.status !== 'PENDING') {
+    addLog('INFO', `Skipped: Event is a status update (${messageObj.status})`);
     return;
   }
 
   if (messageObj.key.fromMe === true) {
-    addLog('INFO', 'Skipped: Message is outgoing (fromMe: true).');
+    addLog('INFO', 'Skipped: Outgoing message.');
     return;
   }
 
   const jid = messageObj.key.remoteJid;
   if (!jid) {
-    addLog('INFO', 'Skipped: No remoteJid found.');
+    addLog('INFO', 'Skipped: remoteJid is missing.');
     return;
   }
 
-  // 4. Extract Text Content (Thorough search)
-  const text = messageObj.message?.conversation || 
-               messageObj.message?.extendedTextMessage?.text || 
-               messageObj.message?.imageMessage?.caption ||
-               messageObj.message?.videoMessage?.caption ||
-               messageObj.conversation || 
-               messageObj.text ||
-               '';
+  // 4. Robust Text Content Search
+  let text = '';
+  const msg = messageObj.message || {};
+  
+  text = msg.conversation || 
+         msg.extendedTextMessage?.text || 
+         msg.imageMessage?.caption ||
+         msg.videoMessage?.caption ||
+         messageObj.conversation || 
+         messageObj.text ||
+         '';
+
+  // Some versions put the message content inside a 'text' property directly in messageObj
+  if (!text && messageObj.message?.text) text = messageObj.message.text;
 
   if (!text || text.trim().length === 0) {
-    addLog('INFO', 'Skipped: Message has no text/caption.', { jid });
+    addLog('INFO', 'Skipped: No text content found in message structure.', { 
+      hasMessage: !!messageObj.message,
+      messageKeys: messageObj.message ? Object.keys(messageObj.message) : []
+    });
     return;
   }
 
   // 5. Check Config
   if (!evolutionConfig) {
-    addLog('ERROR', 'Reply Aborted: No Evolution Config in memory. Go to Settings and Save.');
+    addLog('ERROR', 'Reply Aborted: No Evolution Config in memory.');
     return;
   }
 
-  addLog('WEBHOOK', `Processing Msg: "${text.substring(0, 40)}..."`, { from: jid });
+  addLog('WEBHOOK', `Processing: "${text.substring(0, 50)}..."`, { from: jid });
 
   // 6. Manage Context
   if (!userMemory.has(jid)) userMemory.set(jid, []);
@@ -244,9 +256,10 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   if (history.length > 8) history.shift();
 
   try {
-    // 7. Typing Indicator
+    // 7. Presence
+    const cleanNumber = jid.split('@')[0];
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
-      number: jid.split('@')[0], 
+      number: cleanNumber, 
       presence: 'composing' 
     });
 
@@ -256,18 +269,18 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
 
     // 9. Send Reply
     const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
-      number: jid.split('@')[0], 
+      number: cleanNumber, 
       text: aiResponse 
     });
 
     if (sendResult && sendResult.ok) {
-      addLog('SUCCESS', `Replied to ${jid.split('@')[0]}`);
+      addLog('SUCCESS', `Replied to ${cleanNumber}`);
     } else {
       const errBody = await sendResult?.text();
-      addLog('ERROR', `Evolution rejected send: ${sendResult?.status}`, { response: errBody });
+      addLog('ERROR', `Evolution Send Error: ${sendResult?.status}`, { response: errBody });
     }
   } catch (e) {
-    addLog('ERROR', `Processing error: ${e.message}`);
+    addLog('ERROR', `AI/Send Exception: ${e.message}`);
   }
 });
 
