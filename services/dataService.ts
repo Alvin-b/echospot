@@ -29,7 +29,14 @@ export class DataService {
   async getLogs(): Promise<LogEntry[]> { return await this.request('/api/logs') || []; }
   
   async testWebhook(text: string) {
-    return this.request('/api/test-webhook', 'POST', { text });
+    // We try the standard path used in the app config
+    return this.request('/api/sync', 'POST', { 
+      event: 'messages.upsert',
+      data: {
+        key: { remoteJid: 'simulation@s.whatsapp.net', fromMe: false },
+        message: { conversation: text }
+      }
+    });
   }
 
   async saveMaintenanceRecord(record: MaintenanceRecord) {
