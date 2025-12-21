@@ -32,7 +32,7 @@ function addLog(type, message, details = null) {
     details
   };
   webhookLogs.unshift(log);
-  if (webhookLogs.length > 200) webhookLogs.pop(); // Increased log history
+  if (webhookLogs.length > 200) webhookLogs.pop(); 
   console.log(`[${type}] ${message}`);
 }
 
@@ -46,7 +46,6 @@ app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
     bodyContent = `RAW: ${req.rawBody}`;
   }
 
-  // INCREASED PREVIEW TO 4000 chars to avoid truncation
   const preview = bodyContent.substring(0, 4000);
   
   addLog('INFO', `Request Received: ${req.path}`, {
@@ -115,7 +114,7 @@ async function generateAIResponse(history, maintenanceRecords) {
 
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) {
-    addLog('ERROR', 'Evolution Config missing in memory. Please re-save settings in Dashboard.');
+    addLog('ERROR', 'Evolution Config missing in memory.');
     return null;
   }
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
@@ -188,7 +187,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
                     req.path.includes('messages-upsert');
 
   if (!isMsgEvent) {
-    if (event !== 'test' && event !== '') addLog('INFO', `Ignored Event Type: ${payload.event}`);
+    if (event !== 'test' && event !== '') addLog('INFO', `Ignored Event: ${payload.event}`);
     return;
   }
 
@@ -197,13 +196,13 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
   if (!messageObj.key) {
-    addLog('INFO', 'Skipped: Payload has no message key.');
+    addLog('INFO', 'Skipped: No message key.');
     return;
   }
 
-  // Handle status updates which are not messages
+  // Handle status updates
   if (messageObj.status && messageObj.status !== 'PENDING') {
-    addLog('INFO', `Skipped: Event is a status update (${messageObj.status})`);
+    addLog('INFO', `Skipped: Status Update (${messageObj.status})`);
     return;
   }
 
@@ -212,16 +211,18 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     return;
   }
 
-  const jid = messageObj.key.remoteJid;
+  // --- CRITICAL FIX: IDENTIFY THE CORRECT RECIPIENT ---
+  // Priorities: 1. remoteJidAlt (Actual Phone No), 2. remoteJid (LID/Internal), 3. Top-level sender
+  const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid || payload.sender;
+  
   if (!jid) {
-    addLog('INFO', 'Skipped: remoteJid is missing.');
+    addLog('INFO', 'Skipped: Could not determine sender JID.');
     return;
   }
 
-  // 4. Robust Text Content Search
+  // 4. Extract Text Content
   let text = '';
   const msg = messageObj.message || {};
-  
   text = msg.conversation || 
          msg.extendedTextMessage?.text || 
          msg.imageMessage?.caption ||
@@ -230,20 +231,16 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
          messageObj.text ||
          '';
 
-  // Some versions put the message content inside a 'text' property directly in messageObj
   if (!text && messageObj.message?.text) text = messageObj.message.text;
 
   if (!text || text.trim().length === 0) {
-    addLog('INFO', 'Skipped: No text content found in message structure.', { 
-      hasMessage: !!messageObj.message,
-      messageKeys: messageObj.message ? Object.keys(messageObj.message) : []
-    });
+    addLog('INFO', 'Skipped: No text content found.', { from: jid });
     return;
   }
 
   // 5. Check Config
   if (!evolutionConfig) {
-    addLog('ERROR', 'Reply Aborted: No Evolution Config in memory.');
+    addLog('ERROR', 'Reply Aborted: No Evolution Config.');
     return;
   }
 
@@ -256,10 +253,11 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   if (history.length > 8) history.shift();
 
   try {
-    // 7. Presence
-    const cleanNumber = jid.split('@')[0];
+    // 7. Presence (Evolution handles either the number or the JID in the 'number' field)
+    const targetNumber = jid.split('@')[0];
+    
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
-      number: cleanNumber, 
+      number: targetNumber, 
       presence: 'composing' 
     });
 
@@ -267,17 +265,17 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
 
-    // 9. Send Reply
+    // 9. Send Reply to the correctly identified number/JID
     const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
-      number: cleanNumber, 
+      number: targetNumber, 
       text: aiResponse 
     });
 
     if (sendResult && sendResult.ok) {
-      addLog('SUCCESS', `Replied to ${cleanNumber}`);
+      addLog('SUCCESS', `Replied to ${targetNumber} (${jid.includes('lid') ? 'LID Route' : 'Standard Route'})`);
     } else {
       const errBody = await sendResult?.text();
-      addLog('ERROR', `Evolution Send Error: ${sendResult?.status}`, { response: errBody });
+      addLog('ERROR', `Evolution Send Error: ${sendResult?.status}`, { response: errBody, attemptedTarget: targetNumber });
     }
   } catch (e) {
     addLog('ERROR', `AI/Send Exception: ${e.message}`);
