@@ -24,8 +24,6 @@ let issues = [];
 let contacts = []; 
 let evolutionConfig = null;
 let webhookLogs = []; 
-
-// Simple In-Memory Conversation Storage for Context/Memory
 const userMemory = new Map(); 
 
 function addLog(type, message, details = null) {
@@ -41,36 +39,38 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// --- EcoSpot ISP System Prompt (Highly Efficient) ---
+// --- EcoSpot ISP System Prompt (Optimized for Efficiency) ---
 const SYSTEM_PROMPT = `
 You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP in Kenya. 
+GOAL: Resolve customer issues with MINIMUM words. Be fast, be helpful.
 
 EFFICIENCY RULES:
-1. Never repeat the same info twice in one chat.
-2. Use bullet points for pricing.
-3. If they ask about Fiber, list BOTH plans (6Mbps/1500, 20Mbps/2000).
-4. If they ask about Hotspot, list the most popular vouchers (1hr/10, 24hrs/60, Weekly/280).
-5. Start with "Jambo!".
+1. First reply must be under 20 words.
+2. If they ask for plans, list ONLY the price and speed. Do not explain them.
+3. Use Kenyan local terms: "Jambo!", "Pole sana", "M-Pesa".
+4. If they have "No internet", ask: "Is the LOS light red on your router?"
 
-TECHNICAL PROTOCOL:
-- "No Internet": Check the "LOS" red light. If red, it's a fiber cut. If no lights, check power.
-- "Slow Speeds": Ask if they are on 2.4G or 5G wifi. 
+PRICING:
+- Fiber: 6Mbps (1,500/=), 20Mbps (2,000/=).
+- Hotspot: 1hr (10/=), 24hrs (60/=), Week (280/=).
+- M-Pesa: Paybill 400200.
 
-M-PESA:
-- Paybill: 400200. Account: Use your mobile number.
-
-{MAINTENANCE_STATUS}
+OUTAGE STATUS: {MAINTENANCE_STATUS}
 `;
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY;
-  if (!apiKey) return { text: "AI Key missing.", isSerious: false };
+  
+  if (!apiKey || apiKey === "undefined") {
+    addLog('ERROR', 'CRITICAL: Server-side API_KEY is missing. Please add it to your environment variables.');
+    return { text: "System Error: The AI Agent's server key is not configured. Please contact EcoSpot Admin.", isSerious: false };
+  }
   
   const ai = new GoogleGenAI({ apiKey });
   
   const maintenanceText = maintenanceRecords.length > 0 
-    ? "ACTIVE OUTAGES: " + maintenanceRecords.map(m => `${m.area} (${m.status})`).join(', ')
-    : "STATUS: All systems operational.";
+    ? maintenanceRecords.map(m => `${m.area} (${m.status})`).join(', ')
+    : "All regions operational.";
 
   const finalInstruction = SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText);
 
@@ -83,9 +83,9 @@ async function generateAIResponse(history, maintenanceRecords) {
       })),
       config: { 
         systemInstruction: finalInstruction,
-        temperature: 0.2, // Lower temperature = more precise/efficient responses
-        maxOutputTokens: 250,
-        thinkingConfig: { thinkingBudget: 0 } // No delay for thinking, immediate response
+        temperature: 0.1, // Near-zero for extreme efficiency and consistency
+        maxOutputTokens: 150,
+        thinkingConfig: { thinkingBudget: 0 } // No reasoning delay
       }
     });
     
@@ -95,7 +95,8 @@ async function generateAIResponse(history, maintenanceRecords) {
       isSerious: text.includes("[SERIOUS_ISSUE_DETECTED]") 
     };
   } catch (e) {
-    return { text: "Pole, I'm having a brief technical hitch. One moment.", isSerious: false };
+    addLog('ERROR', `AI Generation Error: ${e.message}`);
+    return { text: "Pole, I am currently facing a small delay. Please try again.", isSerious: false };
   }
 }
 
@@ -128,67 +129,67 @@ app.get('/api/instance/status', async (req, res) => {
   } catch (e) { res.json({ status: "ERROR", message: e.message }); }
 });
 
-// --- THE WEBHOOK LISTENER (Handles all common Evolution paths) ---
-app.post(['/api/sync', '/api/sync/*', '/messages-upsert', '/webhook'], async (req, res) => {
-  const payload = req.body || {};
-  
-  // 1. ALWAYS ACK IMMEDIATELY to free the Evolution connection
+// --- ENHANCED WEBHOOK LISTENER ---
+app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
+  // 1. Instant Acknowledge (Speed Priority)
   res.status(200).send('ACK');
 
-  // 2. LOG THE REQUEST
-  addLog('WEBHOOK', `Inbound: ${payload.event || 'Unknown Event'}`, { path: req.path });
+  const payload = req.body || {};
+  if (payload.event !== 'messages.upsert') return;
 
-  if (payload.event === 'messages.upsert') {
-    const data = payload.data || {};
-    // Support both array and flat structure
-    const message = (data.messages ? data.messages[0] : data) || {};
-    
-    if (!message.key || message.key.fromMe) return;
+  const data = payload.data || {};
+  const message = (data.messages ? data.messages[0] : data) || {};
+  if (!message.key || message.key.fromMe) return;
 
-    const jid = message.key.remoteJid;
-    const text = message.message?.conversation || 
-                 message.message?.extendedTextMessage?.text || 
-                 message.conversation;
+  const jid = message.key.remoteJid;
+  const text = message.message?.conversation || 
+               message.message?.extendedTextMessage?.text || 
+               message.conversation;
 
-    if (!text) return;
+  if (!text) return;
 
-    // A. Update Memory
-    if (!userMemory.has(jid)) userMemory.set(jid, []);
-    const history = userMemory.get(jid);
-    history.push({ role: 'user', content: text });
-    if (history.length > 6) history.shift(); // Keep last 3 turns (6 messages)
+  // Memory & Context
+  if (!userMemory.has(jid)) userMemory.set(jid, []);
+  const history = userMemory.get(jid);
+  history.push({ role: 'user', content: text });
+  if (history.length > 4) history.shift();
 
-    addLog('INFO', `Processing message from ${jid}: "${text}"`);
+  addLog('WEBHOOK', `Processing: ${text.substring(0, 30)}...`, { from: jid });
 
-    // B. Presence Signal
-    callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', {
+  // 2. Typing indicator
+  callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
+    number: jid.split('@')[0],
+    presence: 'composing'
+  }).catch(() => {});
+
+  // 3. AI Intelligence
+  const { text: aiResponse } = await generateAIResponse(history, maintenance);
+  history.push({ role: 'agent', content: aiResponse });
+
+  // 4. Send Reply
+  try {
+    const replyRes = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', {
       number: jid.split('@')[0],
-      presence: 'composing'
-    }).catch(() => {});
-
-    // C. AI Intelligence
-    const { text: aiResponse } = await generateAIResponse(history, maintenance);
-    history.push({ role: 'agent', content: aiResponse });
-
-    // D. Final Reply
-    try {
-      await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', {
-        number: jid.split('@')[0],
-        text: aiResponse
-      });
-      addLog('SUCCESS', `Sent efficient response to ${jid}`);
-    } catch (e) {
-      addLog('ERROR', `Failed to send WhatsApp message: ${e.message}`);
+      text: aiResponse
+    });
+    
+    if (replyRes && replyRes.ok) {
+      addLog('SUCCESS', `Replied to ${jid}`);
+    } else {
+      const err = await replyRes?.text();
+      addLog('ERROR', `Evolution API Error: ${err}`);
     }
+  } catch (e) {
+    addLog('ERROR', `Network error sending reply: ${e.message}`);
   }
-});
-
-// GET health check
-app.get(['/api/sync', '/messages-upsert'], (req, res) => {
-  res.json({ status: "EcoSpot Webhook Listener Active", advice: "Ensure you use POST in Evolution API." });
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, () => console.log(`EcoSpot Node is active on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`EcoSpot Node Active on Port ${PORT}`);
+  if (!process.env.API_KEY) {
+    console.error("WARNING: API_KEY is missing from environment variables!");
+  }
+});
