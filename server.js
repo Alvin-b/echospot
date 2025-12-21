@@ -13,13 +13,14 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// Handle both JSON and Form-Encoded payloads (some proxies/versions change this)
+// Enhanced body parsing with raw body capture for deep debugging
 app.use(express.json({
+  limit: '10mb',
   verify: (req, res, buf) => {
     req.rawBody = buf.toString();
   }
 }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // --- Server-Side State ---
 let maintenance = [];
@@ -37,9 +38,17 @@ function addLog(type, message, details = null) {
     details
   };
   webhookLogs.unshift(log);
-  if (webhookLogs.length > 50) webhookLogs.pop();
+  if (webhookLogs.length > 100) webhookLogs.pop(); // Keep more logs for debugging
   console.log(`[${type}] ${message}`);
 }
+
+// Global request logger for all /api calls
+app.use('/api', (req, res, next) => {
+  if (req.path !== '/logs' && req.path !== '/data') {
+    console.log(`[API REQUEST] ${req.method} ${req.path}`);
+  }
+  next();
+});
 
 // --- EcoSpot ISP Constants ---
 const ECO_SPOT_INFO = {
@@ -55,7 +64,7 @@ TONE: Friendly, professional, and concise.
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY;
-  if (!apiKey) return { text: "AI Key missing.", isSerious: false };
+  if (!apiKey) return { text: "AI Key missing in environment.", isSerious: false };
   const ai = new GoogleGenAI({ apiKey });
   const maintenanceContext = maintenanceRecords.length > 0 ? maintenanceRecords.map(m => `- ${m.area}: ${m.status}`).join('\n') : "Operational.";
   const fullPrompt = SYSTEM_PROMPT + "\nStatus:\n" + maintenanceContext;
@@ -72,7 +81,7 @@ async function generateAIResponse(history, maintenanceRecords) {
     const text = response.text || "";
     return { text: text.replace("[SERIOUS_ISSUE_DETECTED]", "").trim(), isSerious: text.includes("[SERIOUS_ISSUE_DETECTED]") };
   } catch (e) {
-    return { text: "AI is busy. Please try in 1 minute.", isSerious: false };
+    return { text: "AI service interrupted. Please check back shortly.", isSerious: false };
   }
 }
 
@@ -83,7 +92,7 @@ app.get('/api/logs', (req, res) => res.json(webhookLogs));
 
 app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
 app.post('/api/issues', (req, res) => { issues = req.body || []; res.json({ success: true }); });
-app.post('/api/config', (req, res) => { evolutionConfig = req.body; addLog('INFO', 'Configuration updated in dashboard.'); res.json({ success: true }); });
+app.post('/api/config', (req, res) => { evolutionConfig = req.body; addLog('INFO', 'Configuration updated.'); res.json({ success: true }); });
 
 app.get('/api/instance/status', async (req, res) => {
   try {
@@ -94,7 +103,7 @@ app.get('/api/instance/status', async (req, res) => {
     if (!response.ok) throw new Error(`Status ${response.status}`);
     const instances = await response.json();
     const myInstance = Array.isArray(instances) ? instances.find(i => i.instanceName === evolutionConfig.instanceName || i.name === evolutionConfig.instanceName) : null;
-    if (!myInstance) return res.json({ status: "ERROR", message: "Instance not found on server." });
+    if (!myInstance) return res.json({ status: "ERROR", message: "Instance not found." });
     const state = myInstance.status || myInstance.connectionStatus || myInstance.state;
     res.json({ status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED', message: `State: ${state}` });
   } catch (e) {
@@ -105,14 +114,13 @@ app.get('/api/instance/status', async (req, res) => {
 app.post('/api/test-webhook', async (req, res) => {
   const mockPayload = {
     event: "messages.upsert",
-    instance: evolutionConfig?.instanceName || "test-instance",
+    instance: "me",
     data: {
       key: { remoteJid: "254700000000@s.whatsapp.net", fromMe: false, id: "SIMULATED_" + Date.now() },
-      pushName: "Test User",
-      message: { conversation: req.body.text || "Hello EcoSpot" }
+      message: { conversation: req.body.text || "hi" }
     }
   };
-  addLog('INFO', 'Simulating webhook event locally...');
+  addLog('INFO', 'Local simulation started...');
   const response = await fetch(`http://localhost:${PORT}/api/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -121,60 +129,64 @@ app.post('/api/test-webhook', async (req, res) => {
   res.json({ success: response.ok, status: response.status });
 });
 
-// THE WEBHOOK ENDPOINT
-app.post('/api/sync', async (req, res) => {
+// ROBUST WEBHOOK HANDLER
+// We use a wildcard (*) to capture /api/sync, /api/sync/, /api/sync/messages-upsert, etc.
+app.post(['/api/sync', '/api/sync/*'], async (req, res) => {
   const payload = req.body || {};
   const method = req.method;
-  const headers = req.headers;
+  const path = req.path;
 
-  // Log everything for debugging
-  addLog('WEBHOOK', `Incoming Request: ${method} to /api/sync`, {
+  // Immediate Trace
+  addLog('WEBHOOK', `Request received: ${method} ${path}`, {
     headers: {
-      'content-type': headers['content-type'],
-      'user-agent': headers['user-agent'],
-      'host': headers['host']
+      'content-type': req.headers['content-type'],
+      'user-agent': req.headers['user-agent']
     },
-    body: payload,
-    raw: req.rawBody ? 'Captured' : 'None'
+    payloadPreview: JSON.stringify(payload).substring(0, 200) + '...',
+    body: payload
   });
 
-  // 1. Handle Evolution API "Test" button
+  // Handle Evolution "Test"
   if (payload.event === 'test' || payload.type === 'test') {
-    addLog('SUCCESS', 'Received "test" event from Evolution API. Connectivity confirmed!');
-    return res.status(200).send('SUCCESS_TEST');
+    addLog('SUCCESS', 'Test connection verified!');
+    return res.status(200).send('SUCCESS');
   }
 
-  // 2. Ensure we have config to respond
+  // Check Config
   if (!evolutionConfig) {
-    addLog('ERROR', 'Discarded webhook: Evolution API not configured on server. Please go to Settings and click Save.');
-    return res.status(200).send('NOT_CONFIGURED');
+    addLog('ERROR', 'Webhook ignored: API settings not configured. Please save your Evolution API details first.');
+    return res.status(200).send('PENDING_CONFIG');
   }
 
-  // 3. Handle messages.upsert
+  // Process message
   if (payload.event === 'messages.upsert') {
-    const message = (payload.data?.messages ? payload.data.messages[0] : payload.data) || {};
+    // Parser for the specific structure provided in your trace
+    const data = payload.data || {};
+    const message = (data.messages ? data.messages[0] : data) || {};
     
     if (!message.key) {
-      addLog('ERROR', 'Malformed payload: No "key" found in message data.', payload);
-      return res.status(200).send('MALFORMED');
+      addLog('ERROR', 'Webhook structure mismatch. Expected "data.key" or "data.messages[0].key"', payload);
+      return res.status(200).send('INVALID_STRUCTURE');
     }
 
     if (message.key.fromMe) {
-      addLog('INFO', 'Skipped: Message is from the bot itself.');
-      return res.status(200).send('SKIPPED');
+      addLog('INFO', 'Ignoring outgoing message (sent from bot).');
+      return res.status(200).send('FROM_ME');
     }
 
     const sender = message.key.remoteJid;
+    // Extract text from the specific "conversation" field seen in your trace
     const text = message.message?.conversation || 
                  message.message?.extendedTextMessage?.text || 
-                 message.message?.imageMessage?.caption;
+                 message.message?.imageMessage?.caption || 
+                 message.conversation; // fallback for very flat payloads
 
     if (!text) {
-      addLog('INFO', `Skipped: Message from ${sender} has no text content.`);
-      return res.status(200).send('NO_TEXT');
+      addLog('INFO', `Ignoring empty message from ${sender}. (Possibly status update or media without caption)`);
+      return res.status(200).send('NO_CONTENT');
     }
 
-    addLog('SUCCESS', `Processing message from ${sender}: "${text}"`);
+    addLog('SUCCESS', `Message from ${sender}: "${text}"`);
 
     const { text: aiResponse } = await generateAIResponse([{ role: 'user', content: text }], maintenance);
     
@@ -189,30 +201,28 @@ app.post('/api/sync', async (req, res) => {
       });
 
       if (response.ok) {
-        addLog('SUCCESS', `Replied to ${sender} via Evolution API.`);
+        addLog('SUCCESS', `Reply sent to ${sender}.`);
       } else {
-        const errData = await response.text();
-        addLog('ERROR', `Failed to reply. Status: ${response.status}`, errData);
+        const errText = await response.text();
+        addLog('ERROR', `Evolution API rejected reply. Status: ${response.status}`, errText);
       }
     } catch (e) {
-      addLog('ERROR', `Network error while replying: ${e.message}`);
+      addLog('ERROR', `Network failure replying to ${sender}: ${e.message}`);
     }
   }
 
-  // Always return 200 to satisfy webhook providers
-  res.status(200).send('OK');
+  res.status(200).send('ACK');
 });
 
-// Support GET requests just in case Evolution or a proxy tries to "ping" the URL
-app.get('/api/sync', (req, res) => {
-  addLog('INFO', 'Received GET request to /api/sync (Webhook URL). Returning 200 OK.');
-  res.status(200).send('EcoSpot Webhook Endpoint Active');
+// GET handler for browser pings
+app.get(['/api/sync', '/api/sync/*'], (req, res) => {
+  res.status(200).json({ status: 'Online', service: 'EcoSpot Webhook Listener', message: 'Send POST requests here.' });
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => {
-  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Not found' });
+  if (req.path.startsWith('/api/')) return res.status(404).json({ error: 'Endpoint not found' });
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.listen(PORT, () => addLog('INFO', `Server logic initialized. Monitoring port ${PORT}...`));
+app.listen(PORT, () => addLog('INFO', `Server is live and listening on port ${PORT}`));

@@ -6,10 +6,12 @@ import { LogEntry } from '../types';
 const WebhookDebugger: React.FC = () => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isPaused, setIsPaused] = useState(false);
-  const [testText, setTestText] = useState('How much is the 6mbps plan?');
+  const [testText, setTestText] = useState('hi');
   const [isTesting, setIsTesting] = useState(false);
+  const [publicUrl, setPublicUrl] = useState('');
 
   useEffect(() => {
+    setPublicUrl(`${window.location.origin}/api/sync`);
     if (isPaused) return;
     const fetchLogs = async () => {
       const data = await dataService.getLogs();
@@ -31,7 +33,7 @@ const WebhookDebugger: React.FC = () => {
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Webhook Debugger</h2>
-          <p className="text-slate-500 text-sm">Real-time inspection of server-to-server communication.</p>
+          <p className="text-slate-500 text-sm">Monitor live communication between Evolution API and this server.</p>
         </div>
         <div className="flex gap-2">
           <button 
@@ -51,29 +53,47 @@ const WebhookDebugger: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-emerald-900 rounded-[2rem] p-8 text-white shadow-xl shadow-emerald-900/20 border border-emerald-800">
-        <h3 className="font-bold mb-4 flex items-center gap-2">
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86 1.417l-1.606 1.606a2 2 0 01-2.112.376M15.428 4.572a2 2 0 00-.547 1.022l-.477 2.387a6 6 0 001.417 3.86l1.606 1.606a2 2 0 01.376 2.112M12 8V4m0 0L8 8m4-4l4 4m-4 11h.01M4.572 4.572l14.856 14.856"/></svg>
-          Simulate Incoming Message
-        </h3>
-        <p className="text-emerald-100/70 text-xs mb-6">
-          Manually trigger the server's webhook handler to verify if your config is working correctly. This bypasses WhatsApp but tests the AI + Evolution API logic.
-        </p>
-        <div className="flex gap-3">
-          <input 
-            type="text" 
-            value={testText}
-            onChange={(e) => setTestText(e.target.value)}
-            className="flex-1 bg-emerald-950/50 border border-emerald-700 rounded-xl px-5 py-3 text-sm focus:ring-2 focus:ring-emerald-400 outline-none"
-            placeholder="Type a test message..."
-          />
-          <button 
-            onClick={runSimulation}
-            disabled={isTesting}
-            className="bg-white text-emerald-900 px-6 py-3 rounded-xl font-bold text-sm hover:bg-emerald-50 active:scale-95 transition-all disabled:opacity-50"
-          >
-            {isTesting ? 'Processing...' : 'Simulate Event'}
-          </button>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 bg-emerald-900 rounded-[2rem] p-8 text-white shadow-xl shadow-emerald-900/20 border border-emerald-800">
+          <h3 className="font-bold mb-4 flex items-center gap-2">
+            <svg className="w-5 h-5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Connectivity Diagnostic
+          </h3>
+          <p className="text-emerald-100/70 text-xs mb-6">
+            If your WhatsApp messages aren't appearing below, copy the command below and run it in your computer's terminal (Command Prompt or Terminal).
+          </p>
+          <div className="bg-emerald-950/50 p-4 rounded-xl border border-emerald-700 font-mono text-[10px] mb-6 select-all break-all">
+            curl -X POST "{publicUrl}" -H "Content-Type: application/json" -d '&#123;"event":"test"&#125;'
+          </div>
+          <div className="flex gap-3">
+            <input 
+              type="text" 
+              value={testText}
+              onChange={(e) => setTestText(e.target.value)}
+              className="flex-1 bg-emerald-950/50 border border-emerald-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-emerald-400"
+              placeholder="Test message content..."
+            />
+            <button 
+              onClick={runSimulation}
+              disabled={isTesting}
+              className="bg-white text-emerald-900 px-5 py-2 rounded-xl font-bold text-xs hover:bg-emerald-50 transition-all disabled:opacity-50"
+            >
+              {isTesting ? 'Sending...' : 'Simulate POST'}
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
+          <h4 className="font-bold text-slate-800 text-sm mb-4">Instance Settings</h4>
+          <div className="space-y-4">
+             <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                <p className="text-[10px] text-slate-400 font-bold uppercase mb-1">Target Webhook URL</p>
+                <p className="text-[11px] font-mono text-emerald-600 truncate select-all">{publicUrl}</p>
+             </div>
+             <p className="text-[10px] text-slate-500 leading-relaxed italic">
+               Note: This app is set to return "ACK" for every valid request to keep the API stable.
+             </p>
+          </div>
         </div>
       </div>
 
@@ -83,15 +103,15 @@ const WebhookDebugger: React.FC = () => {
             <div className="w-3 h-3 bg-rose-500 rounded-full"></div>
             <div className="w-3 h-3 bg-amber-500 rounded-full"></div>
             <div className="w-3 h-3 bg-emerald-500 rounded-full"></div>
-            <span className="ml-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">ecospot-server-logs</span>
+            <span className="ml-4 text-slate-400 font-bold uppercase tracking-widest text-[10px]">ecospot-server-trace</span>
           </div>
           <div className="text-slate-500 text-[9px] uppercase font-bold flex items-center gap-2">
             <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
-            Watcher Active
+            Listening for Incoming Events
           </div>
         </div>
 
-        <div className="h-[500px] overflow-y-auto p-6 space-y-4">
+        <div className="h-[600px] overflow-y-auto p-6 space-y-4">
           {logs.map((log) => (
             <div key={log.id} className="border-l-2 border-slate-800 pl-4 py-1 animate-in slide-in-from-left-2">
               <div className="flex items-center gap-3 mb-1">
@@ -114,51 +134,11 @@ const WebhookDebugger: React.FC = () => {
             </div>
           ))}
           {logs.length === 0 && (
-            <div className="h-full flex flex-col items-center justify-center text-slate-700 space-y-4">
+            <div className="h-full flex flex-col items-center justify-center text-slate-700 space-y-4 py-20">
               <svg className="w-12 h-12 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-              <p className="italic">The console is empty. Use "Simulate Event" above to test.</p>
+              <p className="italic">No traffic detected yet. Use the diagnostic command or check Evolution API settings.</p>
             </div>
           )}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm">
-          <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-            <span className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-blue-600 text-sm">1</span>
-            Verification Checklist
-          </h3>
-          <ul className="space-y-3 text-sm text-slate-600">
-            <li className="flex gap-3">
-              <input type="checkbox" readOnly checked className="mt-1 accent-emerald-500" />
-              <span>Evolution Instance is <b>Connected/Open</b></span>
-            </li>
-            <li className="flex gap-3">
-              <input type="checkbox" readOnly checked className="mt-1 accent-emerald-500" />
-              <span>URL ends in <code className="text-rose-600">/api/sync</code></span>
-            </li>
-            <li className="flex gap-3">
-              <input type="checkbox" readOnly checked className="mt-1 accent-emerald-500" />
-              <span>Event <code className="text-rose-600">MESSAGES_UPSERT</code> is active</span>
-            </li>
-          </ul>
-        </div>
-
-        <div className="bg-white rounded-3xl p-8 border border-slate-100 shadow-sm">
-          <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
-            <span className="w-8 h-8 rounded-full bg-rose-50 flex items-center justify-center text-rose-600 text-sm">?</span>
-            Common Issues
-          </h3>
-          <div className="space-y-4 text-xs">
-            <div>
-              <p className="font-bold text-slate-900 mb-1">Payload Error: Malformed</p>
-              <p className="text-slate-500">The server received data but it doesn't look like an Evolution message. Check your "Webhook Type" in Evolution (set to Instance).</p>
-            </div>
-            <div>
-              <p className="font-bold text-slate-900 mb-1">No Log Entry on Message</p>
-              <p className="text-slate-500">Your server isn't being reached. Ensure your Render URL is public and not behind a firewall or restricted by IP.</p>
-            </div>
-          </div>
         </div>
       </div>
     </div>
