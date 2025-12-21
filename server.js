@@ -39,42 +39,35 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// --- EcoSpot ISP System Prompt (Ultra Efficient) ---
 const SYSTEM_PROMPT = `
 You are the EcoSpot AI Support Agent for EcoSpot Wifi ISP in Kenya. 
 COMMUNICATION STYLE: Ultra-concise, technical, and fast. No fluff.
 
 EFFICIENCY PROTOCOL:
 1. One-sentence limit for most replies.
-2. Never repeat info. 
-3. After the first "Jambo!", stop using greetings.
-4. "No internet": Ask if the router's "LOS" light is red.
-5. "Slow speeds": Tell them to restart the router and test via cable.
+2. After the first "Jambo!", stop using greetings.
+3. "No internet": Ask if the router's "LOS" light is red.
 
-PRICING (DON'T EXPLAIN):
+PRICING:
 - Fiber: 6Mbps (1,500/=), 20Mbps (2,000/=).
-- Hotspot: 1hr (10/=), 24hrs (60/=), Week (280/=).
-- M-Pesa: Paybill 400200. Account: [Phone Number].
+- Hotspot: 1hr (10/=), 24hrs (60/=).
+- Paybill: 400200. Account: [Phone Number].
 
-OUTAGE STATUS: {MAINTENANCE_STATUS}
+STATUS: {MAINTENANCE_STATUS}
 `;
 
 async function generateAIResponse(history, maintenanceRecords) {
-  // Check both standard names for the API Key
-  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   
   if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
-    addLog('ERROR', 'CRITICAL: No AI Key found in GEMINI_API_KEY. Check your hosting environment variables.');
-    return { text: "System Error: Missing API Key. Admin must set GEMINI_API_KEY correctly.", isSerious: false };
+    addLog('ERROR', 'AI Key Missing. Set GEMINI_API_KEY in Render dashboard.');
+    return { text: "System Error: Missing API Key.", isSerious: false };
   }
   
   const ai = new GoogleGenAI({ apiKey });
-  
   const maintenanceText = maintenanceRecords.length > 0 
     ? maintenanceRecords.map(m => `${m.area} (${m.status})`).join(', ')
-    : "All systems operational.";
-
-  const finalInstruction = SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText);
+    : "Operational.";
 
   try {
     const response = await ai.models.generateContent({
@@ -84,33 +77,51 @@ async function generateAIResponse(history, maintenanceRecords) {
         parts: [{ text: h.content }]
       })),
       config: { 
-        systemInstruction: finalInstruction,
+        systemInstruction: SYSTEM_PROMPT.replace('{MAINTENANCE_STATUS}', maintenanceText),
         temperature: 0.1, 
         maxOutputTokens: 100, 
         thinkingConfig: { thinkingBudget: 0 } 
       }
     });
-    
-    const text = response.text || "";
-    return { 
-      text: text.replace("[SERIOUS_ISSUE_DETECTED]", "").trim(), 
-      isSerious: text.includes("[SERIOUS_ISSUE_DETECTED]") 
-    };
+    return { text: (response.text || "").trim(), isSerious: false };
   } catch (e) {
     addLog('ERROR', `AI Error: ${e.message}`);
-    return { text: "Pole, I am currently facing a small delay. Please try again.", isSerious: false };
+    return { text: "Service temporarily delayed.", isSerious: false };
   }
 }
 
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) return null;
-  const baseUrl = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
-  const url = `${baseUrl.startsWith('http') ? baseUrl : 'https://' + baseUrl}${endpoint}`;
-  return fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json', 'apikey': evolutionConfig.apiKey },
-    body: body ? JSON.stringify(body) : undefined
-  });
+  
+  // Clean Base URL: remove trailing slash, ensure https
+  let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
+  if (!base.startsWith('http')) base = 'https://' + base;
+  
+  // Clean Endpoint: ensure starts with slash
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const url = `${base}${cleanEndpoint}`;
+
+  addLog('INFO', `Outbound to Evolution: ${method} ${cleanEndpoint}`, { url });
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+    const res = await fetch(url, {
+      method,
+      headers: { 
+        'Content-Type': 'application/json', 
+        'apikey': evolutionConfig.apiKey.trim() 
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    return res;
+  } catch (e) {
+    addLog('ERROR', `Network Failure calling Evolution: ${e.message}`, { url });
+    throw e;
+  }
 }
 
 // --- Dashboard API ---
@@ -124,12 +135,11 @@ app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
     
-    // More robust connection status check using specific instance endpoint
     const response = await callEvolution(`/instance/connectionStatus/${evolutionConfig.instanceName}`, 'GET');
     
     if (!response || !response.ok) {
         const errText = await response?.text();
-        return res.json({ status: "ERROR", message: "API Unreachable", raw: errText });
+        return res.json({ status: "ERROR", message: "API Unreachable", raw: errText, url: response?.url });
     }
     
     const statusData = await response.json();
@@ -138,23 +148,23 @@ app.get('/api/instance/status', async (req, res) => {
     if (state === 'open') {
         res.json({ status: 'CONNECTED', state });
     } else {
-        res.json({ 
-            status: 'DISCONNECTED', 
-            state: state || 'unknown',
-            message: `Evolution reports state is "${state || 'unknown'}". You may need to scan the QR code.`
-        });
+        res.json({ status: 'DISCONNECTED', state: state || 'unknown' });
     }
-  } catch (e) { res.json({ status: "ERROR", message: e.message }); }
+  } catch (e) { 
+    res.json({ status: "ERROR", message: `Network: ${e.message}` }); 
+  }
 });
 
-// --- ENHANCED WEBHOOK LISTENER ---
+// --- WEBHOOK LISTENER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
-  // 1. Instant Acknowledge
+  // Acknowledge IMMEDIATELY to Evolution API (within < 2s)
   res.status(200).send('ACK');
 
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
   const payload = req.body || {};
+
   if (payload.event !== 'messages.upsert') {
-    if (payload.event) addLog('INFO', `Received non-message event: ${payload.event}`);
+    if (payload.event) addLog('INFO', `Event from ${ip}: ${payload.event}`);
     return;
   }
 
@@ -169,39 +179,31 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
 
   if (!text) return;
 
-  // Memory & Context
+  addLog('WEBHOOK', `Message from ${jid}: "${text.substring(0, 20)}..."`, { source: ip });
+
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 4) history.shift();
+  if (history.length > 6) history.shift();
 
-  addLog('WEBHOOK', `Inbound: ${text.substring(0, 30)}...`, { from: jid });
-
-  // 2. Typing indicator
-  callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
-    number: jid.split('@')[0],
-    presence: 'composing'
-  }).catch(() => {});
-
-  // 3. AI Intelligence
-  const { text: aiResponse } = await generateAIResponse(history, maintenance);
-  history.push({ role: 'agent', content: aiResponse });
-
-  // 4. Send Reply
+  // Async processing after ACK
   try {
-    const replyRes = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', {
+    await callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
+      number: jid.split('@')[0],
+      presence: 'composing'
+    });
+
+    const { text: aiResponse } = await generateAIResponse(history, maintenance);
+    history.push({ role: 'agent', content: aiResponse });
+
+    await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', {
       number: jid.split('@')[0],
       text: aiResponse
     });
     
-    if (replyRes && replyRes.ok) {
-      addLog('SUCCESS', `Replied to ${jid}`);
-    } else {
-      const err = await replyRes?.text();
-      addLog('ERROR', `Evolution API Error: ${err}`);
-    }
+    addLog('SUCCESS', `Replied to ${jid}`);
   } catch (e) {
-    addLog('ERROR', `Network error sending reply: ${e.message}`);
+    addLog('ERROR', `Webhook processing failed: ${e.message}`);
   }
 });
 
@@ -210,10 +212,10 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html
 
 app.listen(PORT, () => {
   console.log(`EcoSpot Node Active on Port ${PORT}`);
-  const keyToUse = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  const keyToUse = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!keyToUse) {
-    console.error("WARNING: No API Key (API_KEY or GEMINI_API_KEY) found in environment variables!");
+    console.error("WARNING: No GEMINI_API_KEY found!");
   } else {
-    console.log(`SUCCESS: AI Key detected (Starts with: ${keyToUse.substring(0, 4)}...)`);
+    console.log(`SUCCESS: AI Key detected (Ending: ...${keyToUse.slice(-4)})`);
   }
 });
