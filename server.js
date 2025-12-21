@@ -12,21 +12,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-// Robust JSON parsing for webhooks
-app.use(express.json({
-  limit: '10mb',
-  verify: (req, res, buf) => { req.rawBody = buf.toString(); }
-}));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// --- Server-Side State ---
-let maintenance = [];
-let issues = [];
-let contacts = []; 
-let evolutionConfig = null;
+// --- Log Helper ---
 let webhookLogs = []; 
-const userMemory = new Map(); 
-
 function addLog(type, message, details = null) {
   const log = {
     id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
@@ -39,6 +27,42 @@ function addLog(type, message, details = null) {
   if (webhookLogs.length > 100) webhookLogs.pop();
   console.log(`[${type}] ${message}`);
 }
+
+// 1. GLOBAL REQUEST CATCHER
+// This catches every hit to the sync endpoint BEFORE parsing to verify connectivity
+app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
+  addLog('INFO', `Incoming Request: ${req.method} ${req.path}`, {
+    ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+    contentType: req.headers['content-type'],
+    userAgent: req.headers['user-agent']
+  });
+  next();
+});
+
+// 2. PERMISSIVE JSON PARSING
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => { req.rawBody = buf.toString(); }
+}));
+
+// Error handler for JSON parsing errors (prevents 400 crashes)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    addLog('ERROR', 'Malformed JSON payload received. Parsing failed.', { error: err.message });
+    return res.status(200).send('ACK_PARSE_ERROR'); 
+  }
+  next();
+});
+
+// 3. FORM-DATA / URL-ENCODED SUPPORT
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// --- Server-Side State ---
+let maintenance = [];
+let issues = [];
+let contacts = []; 
+let evolutionConfig = null;
+const userMemory = new Map(); 
 
 const SYSTEM_PROMPT = `Role: EcoSpot Support (Kenya). 
 Rule: Max one sentence. No fluff/pleasantries. 
@@ -86,7 +110,6 @@ async function generateAIResponse(history, maintenanceRecords) {
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) return null;
   
-  // URL NORMALIZATION (Crucial for Node fetch)
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
   
@@ -102,7 +125,6 @@ async function callEvolution(endpoint, method, body) {
         'Content-Type': 'application/json', 
         'apikey': evolutionConfig.apiKey.trim(),
         'Accept': 'application/json',
-        // High-compatibility User Agent for Cloudflare Bypass
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
       },
       body: body ? JSON.stringify(body) : undefined
@@ -125,7 +147,6 @@ app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
     
-    // Check using fetchInstances as it's the most reliable fallback
     const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
     
     if (!listResponse || !listResponse.ok) {
@@ -140,7 +161,6 @@ app.get('/api/instance/status', async (req, res) => {
     }
     
     const instances = await listResponse.json();
-    // Support both direct array and wrapped object responses
     const list = Array.isArray(instances) ? instances : (instances.instances || []);
     const mine = list.find(i => 
       (i.instanceName === evolutionConfig.instanceName) || 
@@ -150,13 +170,13 @@ app.get('/api/instance/status', async (req, res) => {
     if (mine) {
       const state = mine.status || mine.state;
       return res.json({ 
-        status: state === 'open' ? 'CONNECTED' : 'DISCONNECTED', 
+        status: (state === 'open' || state === 'connected') ? 'CONNECTED' : 'DISCONNECTED', 
         state: state 
       });
     } else {
       return res.json({ 
         status: 'ERROR', 
-        message: `Instance "${evolutionConfig.instanceName}" was not found in your Evolution account.` 
+        message: `Instance "${evolutionConfig.instanceName}" not found.` 
       });
     }
   } catch (e) { 
@@ -166,19 +186,21 @@ app.get('/api/instance/status', async (req, res) => {
 
 // --- WEBHOOK LISTENER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
-  // Acknowledge IMMEDIATELY
-  res.status(200).send('ACK');
-
-  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  // 4. EXPLICIT TEST EVENT HANDLING
   const payload = req.body || {};
-
-  // Handle Evolution "Test Webhook" button
-  if (payload.event === 'test' || !payload.event) {
-    addLog('SUCCESS', 'Received Webhook Test Event', { source: ip });
-    return;
+  
+  if (payload.event === 'test' || payload.type === 'test' || Object.keys(payload).length === 0) {
+    addLog('SUCCESS', 'Webhook verified successfully (Test Event)');
+    return res.status(200).send('ACK');
   }
 
-  if (payload.event !== 'messages.upsert') return;
+  // Acknowledge Evolution API immediately
+  res.status(200).send('ACK');
+
+  if (payload.event !== 'messages.upsert') {
+    addLog('INFO', `Ignored Event: ${payload.event || 'Unknown'}`);
+    return;
+  }
 
   const data = payload.data || {};
   const message = (data.messages ? data.messages[0] : data) || {};
@@ -196,7 +218,7 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 6) history.shift();
+  if (history.length > 10) history.shift();
 
   try {
     await callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
@@ -223,10 +245,4 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html
 
 app.listen(PORT, () => {
   console.log(`EcoSpot Node Active on Port ${PORT}`);
-  const keyToUse = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  if (!keyToUse) {
-    console.error("WARNING: No GEMINI_API_KEY found in environment!");
-  } else {
-    console.log(`SUCCESS: AI Key detected (Ending: ...${keyToUse.slice(-4)})`);
-  }
 });
