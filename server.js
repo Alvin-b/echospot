@@ -28,33 +28,29 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// 1. GLOBAL REQUEST CATCHER
-// This catches every hit to the sync endpoint BEFORE parsing to verify connectivity
+// Global Request Catcher
 app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
   addLog('INFO', `Incoming Request: ${req.method} ${req.path}`, {
     ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-    contentType: req.headers['content-type'],
-    userAgent: req.headers['user-agent']
+    contentType: req.headers['content-type']
   });
   next();
 });
 
-// 2. PERMISSIVE JSON PARSING
+// Permissive JSON Parsing
 app.use(express.json({
   limit: '10mb',
   verify: (req, res, buf) => { req.rawBody = buf.toString(); }
 }));
 
-// Error handler for JSON parsing errors (prevents 400 crashes)
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    addLog('ERROR', 'Malformed JSON payload received. Parsing failed.', { error: err.message });
+    addLog('ERROR', 'Malformed JSON payload received.', { error: err.message });
     return res.status(200).send('ACK_PARSE_ERROR'); 
   }
   next();
 });
 
-// 3. FORM-DATA / URL-ENCODED SUPPORT
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // --- Server-Side State ---
@@ -75,11 +71,7 @@ Status: {MAINTENANCE_STATUS}`;
 
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  
-  if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
-    addLog('ERROR', 'AI Key Missing. Set GEMINI_API_KEY in Render dashboard.');
-    return { text: "System Error: Missing API Key.", isSerious: false };
-  }
+  if (!apiKey || apiKey === "undefined") return { text: "System Error: Missing API Key.", isSerious: false };
   
   const ai = new GoogleGenAI({ apiKey });
   const maintenanceText = maintenanceRecords.length > 0 
@@ -102,21 +94,15 @@ async function generateAIResponse(history, maintenanceRecords) {
     });
     return { text: (response.text || "").trim(), isSerious: false };
   } catch (e) {
-    addLog('ERROR', `AI Error: ${e.message}`);
     return { text: "Service temporarily delayed.", isSerious: false };
   }
 }
 
 async function callEvolution(endpoint, method, body) {
   if (!evolutionConfig) return null;
-  
   let base = evolutionConfig.baseUrl.trim().replace(/\/$/, '');
   if (!base.startsWith('http')) base = 'https://' + base;
-  
-  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  const url = `${base}${cleanEndpoint}`;
-
-  addLog('INFO', `Evolution API Request: ${method} ${cleanEndpoint}`);
+  const url = `${base}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 
   try {
     const res = await fetch(url, {
@@ -131,7 +117,6 @@ async function callEvolution(endpoint, method, body) {
     });
     return res;
   } catch (e) {
-    addLog('ERROR', `Physical Network Error: ${e.message}`, { url });
     throw e;
   }
 }
@@ -147,93 +132,86 @@ app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
     
-    const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
-    
-    if (!listResponse || !listResponse.ok) {
-       const errCode = listResponse?.status || 'No Response';
-       const errBody = await listResponse?.text();
-       return res.json({ 
-         status: "ERROR", 
-         message: `Server returned HTTP ${errCode}`, 
-         raw: errBody,
-         url: listResponse?.url 
-       });
-    }
-    
-    const instances = await listResponse.json();
-    const list = Array.isArray(instances) ? instances : (instances.instances || []);
-    const mine = list.find(i => 
-      (i.instanceName === evolutionConfig.instanceName) || 
-      (i.name === evolutionConfig.instanceName)
-    );
+    // Check multiple endpoints for the state
+    const endpoints = [
+      `/instance/connectionState/${evolutionConfig.instanceName}`,
+      `/instance/connect/${evolutionConfig.instanceName}`,
+      `/instance/connectionStatus/${evolutionConfig.instanceName}`
+    ];
 
-    if (mine) {
-      const state = mine.status || mine.state;
-      return res.json({ 
-        status: (state === 'open' || state === 'connected') ? 'CONNECTED' : 'DISCONNECTED', 
-        state: state 
-      });
-    } else {
-      return res.json({ 
-        status: 'ERROR', 
-        message: `Instance "${evolutionConfig.instanceName}" not found.` 
-      });
+    for (const endpoint of endpoints) {
+      try {
+        const response = await callEvolution(endpoint, 'GET');
+        if (response && response.ok) {
+          const data = await response.json();
+          // Extract state from various possible structures
+          const state = data?.instance?.state || data?.instance?.status || data?.state || data?.status;
+          
+          if (state && typeof state === 'string') {
+            const isConnected = ['open', 'connected', 'CONNECTED'].includes(state.toLowerCase());
+            return res.json({ 
+              status: isConnected ? 'CONNECTED' : 'DISCONNECTED', 
+              state: state 
+            });
+          }
+        }
+      } catch (e) {
+        // Continue to next endpoint if this one fails
+        console.warn(`Endpoint ${endpoint} failed, trying next...`);
+      }
     }
+
+    // Fallback: Check list of all instances
+    const listResponse = await callEvolution('/instance/fetchInstances', 'GET');
+    if (listResponse && listResponse.ok) {
+      const instances = await listResponse.json();
+      const list = Array.isArray(instances) ? instances : (instances.instances || []);
+      const mine = list.find(i => (i.instanceName === evolutionConfig.instanceName) || (i.name === evolutionConfig.instanceName));
+
+      if (mine) {
+        const state = mine.status || mine.state || mine.connectionStatus || 'Unknown';
+        const isConnected = typeof state === 'string' && ['open', 'connected', 'CONNECTED'].includes(state.toLowerCase());
+        return res.json({ 
+          status: isConnected ? 'CONNECTED' : 'DISCONNECTED', 
+          state: state
+        });
+      }
+    }
+
+    res.json({ status: "ERROR", message: `Could not verify status of "${evolutionConfig.instanceName}". Verify URL and Global Key.` });
   } catch (e) { 
     res.json({ status: "ERROR", message: `Connection Failed: ${e.message}` }); 
   }
 });
 
-// --- WEBHOOK LISTENER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
-  // 4. EXPLICIT TEST EVENT HANDLING
   const payload = req.body || {};
-  
   if (payload.event === 'test' || payload.type === 'test' || Object.keys(payload).length === 0) {
     addLog('SUCCESS', 'Webhook verified successfully (Test Event)');
     return res.status(200).send('ACK');
   }
-
-  // Acknowledge Evolution API immediately
   res.status(200).send('ACK');
-
-  if (payload.event !== 'messages.upsert') {
-    addLog('INFO', `Ignored Event: ${payload.event || 'Unknown'}`);
-    return;
-  }
+  if (payload.event !== 'messages.upsert') return;
 
   const data = payload.data || {};
   const message = (data.messages ? data.messages[0] : data) || {};
   if (!message.key || message.key.fromMe) return;
 
   const jid = message.key.remoteJid;
-  const text = message.message?.conversation || 
-               message.message?.extendedTextMessage?.text || 
-               message.conversation;
-
+  const text = message.message?.conversation || message.message?.extendedTextMessage?.text || message.conversation;
   if (!text) return;
 
   addLog('WEBHOOK', `Message: "${text.substring(0, 25)}..."`, { from: jid });
-
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
   if (history.length > 10) history.shift();
 
   try {
-    await callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', {
-      number: jid.split('@')[0],
-      presence: 'composing'
-    });
-
+    await callEvolution(`/chat/sendPresence/${evolutionConfig?.instanceName}`, 'POST', { number: jid.split('@')[0], presence: 'composing' });
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
-
-    await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', {
-      number: jid.split('@')[0],
-      text: aiResponse
-    });
-    
+    await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { number: jid.split('@')[0], text: aiResponse });
     addLog('SUCCESS', `AI Replied to ${jid}`);
   } catch (e) {
     addLog('ERROR', `Failed to process reply: ${e.message}`);
@@ -242,7 +220,4 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
-
-app.listen(PORT, () => {
-  console.log(`EcoSpot Node Active on Port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`EcoSpot Node Active on Port ${PORT}`));

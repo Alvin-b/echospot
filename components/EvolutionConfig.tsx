@@ -29,13 +29,13 @@ const EvolutionConfigComp: React.FC = () => {
       
       if (result.status === 'CONNECTED') {
         setStatus('CONNECTED');
-        setStateInfo('OPEN');
+        setStateInfo(result.state?.toUpperCase() || 'OPEN');
       } else if (result.status === 'NOT_CONFIGURED') {
         setStatus('NOT_CONFIGURED');
       } else if (result.status === 'DISCONNECTED') {
         setStatus('DISCONNECTED');
-        setStateInfo(result.state?.toUpperCase() || 'UNKNOWN');
-        setErrorMessage(`Instance found but status is "${result.state}". Open Evolution Dashboard and scan the QR code.`);
+        setStateInfo(result.state?.toUpperCase() || 'OFFLINE');
+        setErrorMessage(`Instance found but status is "${result.state || 'closed'}". Open Evolution Dashboard and scan the QR code.`);
       } else {
         setStatus('ERROR');
         setErrorMessage(result.message || 'API Unreachable. Verify URL and Global Key.');
