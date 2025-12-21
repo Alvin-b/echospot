@@ -11,9 +11,19 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// --- 1. CRITICAL: BODY PARSERS MUST BE FIRST ---
+// This ensures req.body is populated BEFORE any logging or routing happens.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => { 
+    // Store raw body as string for debugging "No Body" issues
+    req.rawBody = buf.toString(); 
+  }
+}));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cors());
 
-// --- Log Helper ---
+// --- 2. LOGGING HELPER ---
 let webhookLogs = []; 
 function addLog(type, message, details = null) {
   const log = {
@@ -28,34 +38,40 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// Global Request Catcher
+// --- 3. REQUEST LOGGER (Now that body is parsed) ---
 app.use(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
-  // Capture body for debugging
-  const bodyPreview = req.body ? JSON.stringify(req.body).substring(0, 300) : 'No Body';
+  // Try to get body from parsed JSON, then raw text, then fallback
+  let bodyContent = 'Empty';
+  
+  if (req.body && Object.keys(req.body).length > 0) {
+    bodyContent = JSON.stringify(req.body);
+  } else if (req.rawBody) {
+    bodyContent = `RAW: ${req.rawBody}`;
+  }
+
+  const preview = bodyContent.substring(0, 400);
+  
   addLog('INFO', `Request Received: ${req.path}`, {
     method: req.method,
-    body: bodyPreview + (bodyPreview.length >= 300 ? '...' : '')
+    headers: {
+      'content-type': req.headers['content-type'],
+      'user-agent': req.headers['user-agent']
+    },
+    body: preview + (bodyContent.length > 400 ? '...' : '')
   });
   next();
 });
 
-// Permissive JSON Parsing
-app.use(express.json({
-  limit: '10mb',
-  verify: (req, res, buf) => { req.rawBody = buf.toString(); }
-}));
-
+// Error handling for bad JSON
 app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    addLog('ERROR', 'Malformed JSON payload.', { error: err.message });
+    addLog('ERROR', 'Payload is not valid JSON.', { error: err.message, raw: req.rawBody });
     return res.status(200).send('ACK_PARSE_ERROR'); 
   }
   next();
 });
 
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// --- Server-Side State ---
+// --- 4. SERVER STATE & AI LOGIC ---
 let maintenance = [];
 let issues = [];
 let contacts = []; 
@@ -125,7 +141,7 @@ async function callEvolution(endpoint, method, body) {
   }
 }
 
-// --- Dashboard API ---
+// --- 5. DASHBOARD ROUTES ---
 app.get('/api/data', (req, res) => res.json({ maintenance, issues, contacts, config: evolutionConfig }));
 app.get('/api/logs', (req, res) => res.json(webhookLogs));
 app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
@@ -161,7 +177,7 @@ app.get('/api/instance/status', async (req, res) => {
   }
 });
 
-// --- WEBHOOK HANDLER ---
+// --- 6. WEBHOOK HANDLER ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const payload = req.body || {};
   
@@ -175,22 +191,21 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
                     req.path.includes('messages-upsert');
 
   if (!isMsgEvent) {
-    if (event !== 'test') addLog('INFO', `Ignored Non-Message Event: ${payload.event}`);
+    if (event !== 'test') addLog('INFO', `Ignored Non-Message Event: ${payload.event || 'None'}`);
     return;
   }
 
   // 3. Extract Message Object
-  // Evolution can send data in payload.data.messages[0] or payload.data directly
   const messageData = payload.data || {};
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
   if (!messageObj.key) {
-    addLog('INFO', 'Skipped: No message key found in payload.');
+    addLog('INFO', 'Skipped: Payload has no standard message structure (no key).');
     return;
   }
 
   if (messageObj.key.fromMe === true) {
-    addLog('INFO', 'Skipped: Message is from the agent itself.');
+    addLog('INFO', 'Skipped: Message is outgoing (fromMe: true).');
     return;
   }
 
@@ -210,17 +225,17 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
                '';
 
   if (!text || text.trim().length === 0) {
-    addLog('INFO', 'Skipped: Message contains no text content.', { jid });
+    addLog('INFO', 'Skipped: Message has no text/caption.', { jid });
     return;
   }
 
   // 5. Check Config
   if (!evolutionConfig) {
-    addLog('ERROR', 'Reply Aborted: evolutionConfig is null. Visit API Settings to re-save.');
+    addLog('ERROR', 'Reply Aborted: No Evolution Config in memory. Go to Settings and Save.');
     return;
   }
 
-  addLog('WEBHOOK', `Processing: "${text.substring(0, 40)}..."`, { from: jid });
+  addLog('WEBHOOK', `Processing Msg: "${text.substring(0, 40)}..."`, { from: jid });
 
   // 6. Manage Context
   if (!userMemory.has(jid)) userMemory.set(jid, []);
