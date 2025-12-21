@@ -64,8 +64,8 @@ async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   
   if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
-    addLog('ERROR', 'CRITICAL: No API Key found in process.env.API_KEY or process.env.GEMINI_API_KEY');
-    return { text: "System Error: Missing API Key. Admin needs to set GEMINI_API_KEY in environment variables.", isSerious: false };
+    addLog('ERROR', 'CRITICAL: No AI Key found in GEMINI_API_KEY. Check your hosting environment variables.');
+    return { text: "System Error: Missing API Key. Admin must set GEMINI_API_KEY correctly.", isSerious: false };
   }
   
   const ai = new GoogleGenAI({ apiKey });
@@ -86,7 +86,7 @@ async function generateAIResponse(history, maintenanceRecords) {
       config: { 
         systemInstruction: finalInstruction,
         temperature: 0.1, 
-        maxOutputTokens: 100, // Reduced to force brevity
+        maxOutputTokens: 100, 
         thinkingConfig: { thinkingBudget: 0 } 
       }
     });
@@ -98,7 +98,7 @@ async function generateAIResponse(history, maintenanceRecords) {
     };
   } catch (e) {
     addLog('ERROR', `AI Error: ${e.message}`);
-    return { text: "Pole, technical hitch. Try again.", isSerious: false };
+    return { text: "Pole, I am currently facing a small delay. Please try again.", isSerious: false };
   }
 }
 
@@ -109,7 +109,7 @@ async function callEvolution(endpoint, method, body) {
   return fetch(url, {
     method,
     headers: { 'Content-Type': 'application/json', 'apikey': evolutionConfig.apiKey },
-    body: JSON.stringify(body)
+    body: body ? JSON.stringify(body) : undefined
   });
 }
 
@@ -123,11 +123,27 @@ app.post('/api/config', (req, res) => { evolutionConfig = req.body; res.json({ s
 app.get('/api/instance/status', async (req, res) => {
   try {
     if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
-    const response = await callEvolution('/instance/fetchInstances', 'GET');
-    if (!response || !response.ok) return res.json({ status: "ERROR", message: "API Unreachable" });
-    const instances = await response.json();
-    const myInstance = Array.isArray(instances) ? instances.find(i => i.instanceName === evolutionConfig.instanceName || i.name === evolutionConfig.instanceName) : null;
-    res.json({ status: myInstance?.status === 'open' ? 'CONNECTED' : 'DISCONNECTED' });
+    
+    // More robust connection status check using specific instance endpoint
+    const response = await callEvolution(`/instance/connectionStatus/${evolutionConfig.instanceName}`, 'GET');
+    
+    if (!response || !response.ok) {
+        const errText = await response?.text();
+        return res.json({ status: "ERROR", message: "API Unreachable", raw: errText });
+    }
+    
+    const statusData = await response.json();
+    const state = statusData?.instance?.state || statusData?.state;
+    
+    if (state === 'open') {
+        res.json({ status: 'CONNECTED', state });
+    } else {
+        res.json({ 
+            status: 'DISCONNECTED', 
+            state: state || 'unknown',
+            message: `Evolution reports state is "${state || 'unknown'}". You may need to scan the QR code.`
+        });
+    }
   } catch (e) { res.json({ status: "ERROR", message: e.message }); }
 });
 
@@ -137,7 +153,10 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   res.status(200).send('ACK');
 
   const payload = req.body || {};
-  if (payload.event !== 'messages.upsert') return;
+  if (payload.event !== 'messages.upsert') {
+    if (payload.event) addLog('INFO', `Received non-message event: ${payload.event}`);
+    return;
+  }
 
   const data = payload.data || {};
   const message = (data.messages ? data.messages[0] : data) || {};
@@ -193,8 +212,8 @@ app.listen(PORT, () => {
   console.log(`EcoSpot Node Active on Port ${PORT}`);
   const keyToUse = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!keyToUse) {
-    console.error("WARNING: No API Key (API_KEY or GEMINI_API_KEY) found in environment!");
+    console.error("WARNING: No API Key (API_KEY or GEMINI_API_KEY) found in environment variables!");
   } else {
-    console.log("SUCCESS: AI Key detected and loaded.");
+    console.log(`SUCCESS: AI Key detected (Starts with: ${keyToUse.substring(0, 4)}...)`);
   }
 });

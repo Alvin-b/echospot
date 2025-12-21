@@ -11,6 +11,7 @@ const EvolutionConfigComp: React.FC = () => {
     instanceName: ''
   });
   const [status, setStatus] = useState<'IDLE' | 'CHECKING' | 'CONNECTED' | 'ERROR' | 'DISCONNECTED' | 'NOT_CONFIGURED'>('IDLE');
+  const [stateInfo, setStateInfo] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [attemptedUrl, setAttemptedUrl] = useState('');
   const [rawResponse, setRawResponse] = useState('');
@@ -21,16 +22,19 @@ const EvolutionConfigComp: React.FC = () => {
     setErrorMessage('');
     setAttemptedUrl('');
     setRawResponse('');
+    setStateInfo('');
     
     const result = await evolutionService.getInstanceStatus();
     
     if (result.status === 'CONNECTED') {
       setStatus('CONNECTED');
+      setStateInfo('OPEN');
     } else if (result.status === 'NOT_CONFIGURED') {
       setStatus('NOT_CONFIGURED');
     } else if (result.status === 'DISCONNECTED') {
       setStatus('DISCONNECTED');
-      setErrorMessage(result.message || 'Connected to API, but instance is not "open".');
+      setStateInfo(result.state?.toUpperCase() || 'UNKNOWN');
+      setErrorMessage(result.message || 'Instance is reachable but not in "open" state.');
     } else {
       setStatus('ERROR');
       setErrorMessage(result.message || 'An unexpected error occurred.');
@@ -87,7 +91,7 @@ const EvolutionConfigComp: React.FC = () => {
               status === 'NOT_CONFIGURED' ? 'bg-slate-200' :
               'bg-rose-500'
             }`}></span>
-            {status.replace('_', ' ')}
+            {stateInfo ? `${status.replace('_', ' ')} (${stateInfo})` : status.replace('_', ' ')}
           </div>
         </div>
 
@@ -104,7 +108,6 @@ const EvolutionConfigComp: React.FC = () => {
               placeholder="e.g. https://evolution.cloudfy.live"
               className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500 transition-all font-mono"
             />
-            <p className="text-[9px] text-slate-400 pl-2">Do not add /instance/status to this field. Just the base domain.</p>
           </div>
 
           <div className="space-y-2">
@@ -142,21 +145,20 @@ const EvolutionConfigComp: React.FC = () => {
               <div className="p-5 bg-rose-50 border border-rose-100 rounded-2xl animate-in slide-in-from-top-2">
                 <div className="flex items-center gap-2 text-rose-700 mb-3">
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
-                  <p className="text-xs font-black uppercase tracking-wider">Connection Failure</p>
+                  <p className="text-xs font-black uppercase tracking-wider">Status: {stateInfo || 'Error'}</p>
                 </div>
                 <p className="text-[11px] text-rose-600/90 leading-relaxed font-medium mb-3">{errorMessage}</p>
                 
+                {stateInfo === 'CLOSE' && (
+                    <p className="text-[10px] bg-white/50 p-2 rounded border border-rose-100 text-rose-800 font-bold mb-3 italic">
+                        The instance is "Closed". Open your Evolution Manager and restart the instance or scan the QR code.
+                    </p>
+                )}
+
                 {attemptedUrl && (
                   <div className="mb-3">
                     <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1">Attempted URL:</p>
                     <p className="text-[9px] font-mono text-rose-700 break-all bg-white/50 p-2 rounded border border-rose-100">{attemptedUrl}</p>
-                  </div>
-                )}
-
-                {rawResponse && (
-                  <div className="max-h-40 overflow-y-auto">
-                    <p className="text-[9px] text-slate-400 uppercase font-black tracking-widest mb-1">Raw Server Response:</p>
-                    <pre className="text-[9px] font-mono text-slate-600 bg-white p-2 rounded border border-slate-200 whitespace-pre-wrap">{rawResponse}</pre>
                   </div>
                 )}
               </div>
@@ -172,15 +174,11 @@ const EvolutionConfigComp: React.FC = () => {
         <ul className="space-y-4 text-xs text-slate-400">
           <li className="flex gap-3">
              <span className="text-emerald-500">1.</span>
-             <span>Your instance <b>"{config.instanceName || 'echospot'}"</b> must be created first (as you did in your curl).</span>
+             <span>Your instance <b>"{config.instanceName || 'echospot'}"</b> must be created first.</span>
           </li>
           <li className="flex gap-3">
              <span className="text-emerald-500">2.</span>
-             <span>Visit the <b>Attempted URL</b> in your browser. If you see your Evolution dashboard instead of JSON data, your Base URL is incorrect.</span>
-          </li>
-          <li className="flex gap-3">
-             <span className="text-emerald-500">3.</span>
-             <span>The Global API Key is sensitive. Ensure no extra spaces are present.</span>
+             <span>If status is "QR", you must use your Evolution Dashboard to scan the code.</span>
           </li>
         </ul>
       </div>
