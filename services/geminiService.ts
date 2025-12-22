@@ -8,7 +8,7 @@ export class GeminiService {
   async generateResponse(
     history: { role: string; content: string }[], 
     maintenanceRecords: MaintenanceRecord[]
-  ): Promise<{ text: string; isSerious: boolean }> {
+  ): Promise<{ text: string; escalationReason: string | null }> {
     try {
       const response = await fetch('/api/ai/simulate', {
         method: 'POST',
@@ -23,7 +23,7 @@ export class GeminiService {
       return await response.json();
     } catch (error: any) {
       console.error("AI Proxy Error:", error);
-      return { text: "The AI server is unreachable. Please check your internet connection.", isSerious: false };
+      return { text: "The AI server is unreachable. Please check your connection.", escalationReason: null };
     }
   }
 }

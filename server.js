@@ -36,85 +36,83 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// --- 3. SERVER STATE ---
+// --- 3. SERVER STATE (Mock Database) ---
 let maintenance = [];
 let issues = [];
 let contacts = []; 
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-// --- 4. AI CORE (Conversational Kernel) ---
+// --- 4. AI CORE (Optimized Human-Like Support Kernel) ---
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "undefined") {
     addLog('ERROR', 'AI Error: Missing API_KEY on server.');
-    return { text: "Our AI service is currently unavailable. Please contact our support team directly.", isSerious: false };
+    return { text: "Jambo! Our automated systems are currently restarting. Please contact our support team at 0700 000 000 if you need urgent help.", escalationReason: null };
   }
   
   const ai = new GoogleGenAI({ apiKey });
   
-  const maintenanceText = maintenanceRecords.length > 0 
-    ? maintenanceRecords.map(m => `Location: ${m.area}, Status: ${m.status}, Details: ${m.description}`).join('\n')
-    : "The network is currently stable with no reported outages.";
+  const activeOutages = maintenanceRecords
+    .filter(m => m.status === 'Outage' || m.status === 'In Progress')
+    .map(m => `- ${m.area}: ${m.description} (Resolution: ${m.estimatedResolution || 'TBD'})`)
+    .join('\n');
 
-  // UPDATED: High-fidelity system prompt for a better conversational agent
-  const SYSTEM_PROMPT = `You are "EcoSpot AI", a friendly and highly skilled customer support agent for EcoSpot Kenya, a Wifi ISP. 
+  const maintenanceContext = activeOutages.length > 0 
+    ? `KNOWN NETWORK ISSUES:\n${activeOutages}`
+    : "No widespread outages are currently reported. The network backbone is operational.";
 
-PERSONALITY:
-- Professional, empathetic, and localized (use words like 'Jambo', 'Asante', or 'Pole').
-- You represent a local Kenyan business.
+  const SYSTEM_PROMPT = `You are "EcoSpot AI", a senior customer support engineer for EcoSpot Wifi ISP in Kenya. 
 
-KNOWLEDGE BASE:
-1. Fiber Monthly Plans: 
-   - Eco Basic: 6 Mbps @ KES 1,500
-   - Eco Pro: 20 Mbps @ KES 2,000
-   - Installation Fee: KES 4,500 (one-time).
-2. Hotspot Vouchers:
-   - 1 Hour: 10/-
-   - 12 Hours: 30/-
-   - 24 Hours: 60/-
-   - 1 Week: 280/-
-   - 1 Month: 750/-
-3. Payments:
-   - Paybill: 400200
-   - Account Number: Use your Mobile Phone Number.
-4. Troubleshooting:
-   - "LOS Red Light": This means a fiber signal break. Ask if the cable is bent or damaged.
-   - "Slow Internet": Advise to restart the router by unplugging for 30 seconds.
-   - "Not connecting": Check if the subscription is still active or expired.
+CONVERSATIONAL RULES (IMPORTANT):
+1. **Human-like Tone**: Do NOT start every message with "Jambo!". It sounds robotic. Greet naturally. If you already said hello in the conversation history, don't repeat it. Use variations like "Habari", "Mambo", "Sasa", or simply acknowledge their request directly (e.g., "Asante for asking about that...").
+2. **NO TRUNCATION**: Never stop mid-sentence. Ensure every thought is completed. If you provide a price or a location, finish the full sentence.
+3. **Local Flavor**: Be warm and empathetic. Use "Pole sana" for trouble and "Karibu" for thanks. 
 
-CURRENT NETWORK STATUS:
-${maintenanceText}
+ECOSPOT DATA:
+- Fiber Plans: Eco Basic (6Mbps - 1,500 KES), Eco Pro (20Mbps - 2,000 KES). Installation: 4,500 KES.
+- Hotspot Vouchers: 1Hr (10/-), 24Hrs (60/-), 1Wk (280/-), 1Mo (750/-).
+- Payments: M-Pesa Paybill 400200. Account: Customer Phone Number.
+- Coverage: Primary coverage is currently in Kutus and surrounding areas. We are expanding soon!
 
-CONVERSATION RULES:
-- Greet the user naturally if it's the start of the chat.
-- Provide clear, actionable advice.
-- Keep responses concise (2-4 sentences max).
-- If the customer mentions a physical break or "LOS Red Light", add [CRITICAL_FAULT] to your response.
-- Do NOT say "As an AI model". You ARE EcoSpot Support.`;
+DIAGNOSTICS & ESCALATION:
+Check the history carefully. 
+- If the user says they ALREADY restarted the router or tried your advice and it failed, ESCALATE.
+- If the problem is "every day", "constantly", or "always slow", it is a persistent fault. ESCALATE.
+- If physical damage (cut cables) is reported, ESCALATE.
+
+ESCALATION FORMAT:
+If a rule is met, append: "[ESCALATE: <One sentence specific reason>]" to the end of your message. 
+Example: "I'm sorry that the restart didn't fix your 6Mbps speed. I've logged this for a senior technician to check your line immediately. [ESCALATE: Troubleshooting failed - Router restart ineffective]"
+
+CURRENT NETWORK STATE:
+${maintenanceContext}`;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
+      model: 'gemini-3-pro-preview',
       contents: history.map(h => ({
         role: h.role === 'agent' || h.role === 'model' ? 'model' : 'user',
         parts: [{ text: h.content }]
       })),
       config: { 
         systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.3, // Slightly higher for more natural variety
-        maxOutputTokens: 300
+        temperature: 0.7, // Higher for more natural variety
+        maxOutputTokens: 1024
       }
     });
 
-    const rawText = response.text || "Jambo! EcoSpot Support here. How can I assist you with your internet today?";
-    const isSerious = rawText.includes("[CRITICAL_FAULT]");
-    const cleanText = rawText.replace("[CRITICAL_FAULT]", "").trim();
+    const rawText = response.text || "Jambo! I am here to help. Could you tell me more about your connection issues?";
     
-    return { text: cleanText, isSerious };
+    // Parse Escalation
+    const escalationMatch = rawText.match(/\[ESCALATE: (.*?)\]/);
+    const escalationReason = escalationMatch ? escalationMatch[1] : null;
+    const cleanText = rawText.replace(/\[ESCALATE: .*?\]/g, "").trim();
+    
+    return { text: cleanText, escalationReason };
   } catch (e) {
-    addLog('ERROR', `AI Engine Failure: ${e.message}`);
-    return { text: "I'm having a bit of trouble accessing our systems. Please try again in a few moments, Asante!", isSerious: false };
+    addLog('ERROR', `AI Core Error: ${e.message}`);
+    return { text: "Jambo! I'm having a small technical hitch responding to that. Please ask again in a moment. Asante.", escalationReason: null };
   }
 }
 
@@ -134,7 +132,7 @@ async function callEvolution(endpoint, method, body, customConfig = null) {
     });
     return res;
   } catch (e) {
-    addLog('ERROR', `Proxy Connection Refused`, { url, error: e.message });
+    addLog('ERROR', `Proxy Link Failure`, { url, error: e.message });
     return null;
   }
 }
@@ -168,15 +166,11 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-
   let payload = req.body;
   res.status(200).send('ACK');
 
-  // Handle nested/stringified payloads
   if (payload.body && typeof payload.body === 'string' && payload.body.includes('{')) {
     try { payload = JSON.parse(payload.body); } catch (e) {}
   }
 
   const eventName = payload.event || 'none';
-  addLog('INFO', `Traffic: ${eventName} on ${req.path}`);
-
-  // Filtering logic
   const isMessageUpsert = eventName.toLowerCase().includes('upsert') || 
                           (payload.data && payload.data.messages) ||
                           (payload.messages);
@@ -185,7 +179,6 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-
 
   const data = payload.data || payload;
   const messageObj = (data.messages ? data.messages[0] : data) || {};
-  
   if (!messageObj.key || messageObj.key.fromMe) return;
 
   const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
@@ -194,71 +187,69 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-
 
   if (!jid || !text) return;
 
-  // Auto-config from incoming packets if possible
   if (!evolutionConfig && payload.apikey && payload.server_url) {
     evolutionConfig = { 
       baseUrl: payload.server_url, 
       apiKey: payload.apikey, 
       instanceName: payload.instance || 'me' 
     };
-    addLog('INFO', 'Auto-discovery: API config updated from webhook.');
+    addLog('INFO', 'Evolution Bridge Confirmed');
   }
 
-  if (!evolutionConfig) {
-    addLog('ERROR', 'No configuration found. Please visit /settings and save your API details.');
-    return;
-  }
+  if (!evolutionConfig) return;
 
-  addLog('WEBHOOK', `Chat From ${jid.split('@')[0]}: "${text}"`);
+  addLog('WEBHOOK', `Message from ${jid.split('@')[0]}: "${text}"`);
 
   // Memory Persistence
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 15) history.shift(); // Slightly longer memory
+  if (history.length > 30) history.shift();
 
   try {
     const target = jid.split('@')[0];
     
-    // Set WhatsApp Presence to "Typing"
+    // Typing Visual
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
       number: target, 
       presence: 'composing' 
     });
     
-    // AI Reasoning
-    addLog('INFO', `AI Kernel thinking for ${target}...`);
-    const { text: aiResponse, isSerious } = await generateAIResponse(history, maintenance);
+    // AI Kernel Call
+    const { text: aiResponse, escalationReason } = await generateAIResponse(history, maintenance);
     
-    if (isSerious) {
-      issues.push({ 
+    // Escalation Logging
+    if (escalationReason) {
+      const newIssue = { 
         id: Date.now().toString(), 
         customerPhone: target, 
-        location: 'Auto-Flagged', 
-        description: text, 
-        severity: 'Critical', 
+        location: 'In-Chat Detection', 
+        description: `${escalationReason}. Context: "${text}"`, 
+        severity: escalationReason.toLowerCase().includes('outage') ? 'Critical' : 'Warning', 
         timestamp: new Date(), 
         status: 'Pending' 
-      });
-      addLog('INFO', `Alert: Serious fault logged for customer ${target}`);
+      };
+      
+      issues.unshift(newIssue);
+      if (issues.length > 500) issues.pop();
+      addLog('INFO', `Escalation Auto-Logged: ${escalationReason}`);
     }
 
     history.push({ role: 'agent', content: aiResponse });
 
-    // Dispatch WhatsApp Reply
+    // Send WhatsApp Response
     const result = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: jid, 
       text: aiResponse 
     });
 
     if (result && result.ok) {
-      addLog('SUCCESS', `Response Sent to ${target}`, { reply: aiResponse });
+      addLog('SUCCESS', `AI Response Delivered`, { reply: aiResponse, escalated: !!escalationReason });
     } else {
-      const errorData = await result?.text();
-      addLog('ERROR', 'Evolution API refused to send message.', { status: result?.status, error: errorData });
+      addLog('ERROR', 'Evolution API rejected the response message.');
     }
   } catch (e) {
-    addLog('ERROR', `Kernel Panic: ${e.message}`);
+    addLog('ERROR', `Kernel Execution Error: ${e.message}`);
   }
 });
 
@@ -266,8 +257,5 @@ app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 app.listen(PORT, () => {
-  console.log(`\n================================`);
-  console.log(` EcoSpot ISP AI Node - ONLINE `);
-  console.log(` Port: ${PORT} `);
-  console.log(`================================\n`);
+  console.log(`EcoSpot AI Support Server active on port ${PORT}`);
 });
