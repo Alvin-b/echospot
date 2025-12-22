@@ -43,12 +43,12 @@ let contacts = [];
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-// --- 4. AI CORE (Optimized Human-Like Support Kernel) ---
+// --- 4. AI CORE (Optimized for Quota & Human-Like Flow) ---
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "undefined") {
     addLog('ERROR', 'AI Error: Missing API_KEY on server.');
-    return { text: "Our automated systems are currently restarting. Please contact our support team at 0700 000 000 if you need urgent help. Asante.", escalationReason: null };
+    return { text: "Our systems are currently under maintenance. Please call 0700 000 000 for urgent support. Asante.", escalationReason: null };
   }
   
   const ai = new GoogleGenAI({ apiKey });
@@ -60,50 +60,37 @@ async function generateAIResponse(history, maintenanceRecords) {
 
   const maintenanceContext = activeOutages.length > 0 
     ? `KNOWN NETWORK ISSUES:\n${activeOutages}`
-    : "No widespread outages are currently reported. The network backbone is operational.";
+    : "The network backbone is healthy. No widespread outages reported.";
 
-  const SYSTEM_PROMPT = `You are "EcoSpot AI", a senior customer support specialist for EcoSpot Wifi ISP in Kenya. 
+  const SYSTEM_PROMPT = `You are "EcoSpot AI", the senior support agent for EcoSpot Wifi ISP, Kenya. 
 
-CONVERSATIONAL RULES (CRITICAL):
-1. **GREETING VARIETY**: DO NOT start every response with "Jambo!". If the conversation has already started, do not use a formal greeting at all. Jump straight into the answer. 
-   - If you must greet, use variety: "Habari", "Sasa", "Mambo", or simply acknowledge the previous statement.
-   - NEVER repeat the same greeting twice in one conversation.
-2. **NO TRUNCATION**: You must finish every sentence. If you mention a price (e.g., 4,500 KES), you must finish the sentence explaining what it is for. If you mention a location (e.g., Kutus), finish the thought.
-3. **DIRECT ANSWERS**: Prioritize answering the user's specific question immediately. Do not hide the answer behind pleasantries.
+CONVERSATIONAL RULES:
+1. **NO REPETITIVE GREETINGS**: Do NOT start every reply with "Jambo!". If the user says "Hi", say "Jambo" or "Habari". If the user asks a question after that, answer it DIRECTLY without a greeting. 
+2. **STAY CONCISE**: Use simple, natural Kenyan English. Don't be too robotic.
+3. **COMPLETE THOUGHTS**: Finish every sentence. If quoting a price (e.g. 1,500 KES), explain what it buys.
+4. **COVERAGE**: We are in Kutus. Murang'a is NOT covered yet.
 
-ECOSPOT DATA:
-- Fiber Plans: Eco Basic (6Mbps - 1,500 KES), Eco Pro (20Mbps - 2,000 KES). Installation: 4,500 KES.
-- Hotspot Vouchers: 1Hr (10/-), 24Hrs (60/-), 1Wk (280/-), 1Mo (750/-).
-- Payments: M-Pesa Paybill 400200. Account: Customer Phone Number.
-- Coverage: Primary coverage is currently in Kutus and surrounding areas. Expansion to other towns like Murang'a is in the planning phase but not yet active.
+DIAGNOSTICS:
+- If troubleshooting (restarts, cables) fails or user says they already tried it, ESCALATE.
+- If the problem is "constant" or "every day", ESCALATE.
 
-DIAGNOSTICS & ESCALATION:
-Analyze the history.
-- If the user says they ALREADY tried a step (like restarting) and it failed, ESCALATE.
-- If the user says the problem is recurring ("every day", "always slow"), ESCALATE.
-- If physical infrastructure damage is mentioned, ESCALATE.
-
-ESCALATION FORMAT:
-If a rule is met, append: "[ESCALATE: <One sentence specific reason>]" to the end of your message. 
-
-NETWORK STATUS:
-${maintenanceContext}`;
+ESCALATE FORMAT: Append "[ESCALATE: <Reason>]" only if needed.`;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
+      model: 'gemini-3-flash-preview', // CHANGED: Flash has MUCH higher free-tier quotas than Pro
       contents: history.map(h => ({
         role: h.role === 'agent' || h.role === 'model' ? 'model' : 'user',
         parts: [{ text: h.content }]
       })),
       config: { 
         systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.8, // Slightly higher for more variety
-        maxOutputTokens: 1024
+        temperature: 0.7,
+        maxOutputTokens: 800
       }
     });
 
-    const rawText = response.text || "I'm here to help you. Could you please clarify your request? Asante.";
+    const rawText = response.text || "I'm checking that for you. What exactly is the issue with your connection?";
     
     // Parse Escalation
     const escalationMatch = rawText.match(/\[ESCALATE: (.*?)\]/);
@@ -112,8 +99,13 @@ ${maintenanceContext}`;
     
     return { text: cleanText, escalationReason };
   } catch (e) {
+    const isQuotaError = e.message?.includes('429') || e.message?.includes('quota');
+    if (isQuotaError) {
+      addLog('ERROR', 'Gemini Quota Exceeded (429). Switch to paid or wait for reset.');
+      return { text: "Pole sana, my response engine is a bit busy right now. Please try again in 1 minute or call our office directly for immediate help. Asante.", escalationReason: null };
+    }
     addLog('ERROR', `AI Core Error: ${e.message}`);
-    return { text: "I'm having a slight hitch responding to that. Please try again. Asante.", escalationReason: null };
+    return { text: "I'm having a slight hitch. Could you repeat that? Asante.", escalationReason: null };
   }
 }
 
@@ -133,7 +125,7 @@ async function callEvolution(endpoint, method, body, customConfig = null) {
     });
     return res;
   } catch (e) {
-    addLog('ERROR', `Proxy Link Failure`, { url, error: e.message });
+    addLog('ERROR', `Evolution Link Failure`, { url, error: e.message });
     return null;
   }
 }
@@ -147,7 +139,9 @@ app.post('/api/config', (req, res) => { evolutionConfig = req.body; res.json({ s
 
 app.post('/api/ai/simulate', async (req, res) => {
   const { history } = req.body;
-  const result = await generateAIResponse(history || [], maintenance);
+  // Trim history for simulator to save tokens
+  const trimmedHistory = (history || []).slice(-10);
+  const result = await generateAIResponse(trimmedHistory, maintenance);
   res.json(result);
 });
 
@@ -201,56 +195,50 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-
 
   addLog('WEBHOOK', `Message from ${jid.split('@')[0]}: "${text}"`);
 
-  // Memory Persistence
+  // Token-Saving Memory (Limit to last 8 exchanges)
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 30) history.shift();
+  if (history.length > 16) history.shift(); // 16 entries = 8 exchanges
 
   try {
     const target = jid.split('@')[0];
     
-    // Typing Visual
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
       number: target, 
       presence: 'composing' 
     });
     
-    // AI Kernel Call
     const { text: aiResponse, escalationReason } = await generateAIResponse(history, maintenance);
     
-    // Escalation Logging
     if (escalationReason) {
       const newIssue = { 
         id: Date.now().toString(), 
         customerPhone: target, 
-        location: 'In-Chat Detection', 
-        description: `${escalationReason}. Context: "${text}"`, 
-        severity: escalationReason.toLowerCase().includes('outage') ? 'Critical' : 'Warning', 
+        location: 'Auto-Detected', 
+        description: `${escalationReason}. Triggered by message: "${text}"`, 
+        severity: 'Warning', 
         timestamp: new Date(), 
         status: 'Pending' 
       };
-      
       issues.unshift(newIssue);
       if (issues.length > 500) issues.pop();
-      addLog('INFO', `Escalation Auto-Logged: ${escalationReason}`);
     }
 
     history.push({ role: 'agent', content: aiResponse });
 
-    // Send WhatsApp Response
     const result = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: jid, 
       text: aiResponse 
     });
 
     if (result && result.ok) {
-      addLog('SUCCESS', `AI Response Delivered`, { reply: aiResponse, escalated: !!escalationReason });
+      addLog('SUCCESS', `Response Sent to ${target}`);
     } else {
-      addLog('ERROR', 'Evolution API rejected the response message.');
+      addLog('ERROR', 'Evolution API failed to send response.');
     }
   } catch (e) {
-    addLog('ERROR', `Kernel Execution Error: ${e.message}`);
+    addLog('ERROR', `Webhook Processing Error: ${e.message}`);
   }
 });
 
@@ -258,5 +246,5 @@ app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 app.listen(PORT, () => {
-  console.log(`EcoSpot AI Support Server active on port ${PORT}`);
+  console.log(`EcoSpot AI Server running on port ${PORT}`);
 });
