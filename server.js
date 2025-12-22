@@ -43,20 +43,55 @@ let contacts = [];
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-// --- 4. AI CORE (Server Side Only) ---
+// --- 4. AI CORE (Conversational Kernel) ---
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "undefined") {
     addLog('ERROR', 'AI Error: Missing API_KEY on server.');
-    return { text: "Configuration Error: API Key missing.", isSerious: false };
+    return { text: "Our AI service is currently unavailable. Please contact our support team directly.", isSerious: false };
   }
   
   const ai = new GoogleGenAI({ apiKey });
+  
   const maintenanceText = maintenanceRecords.length > 0 
-    ? maintenanceRecords.map(m => `${m.area}: ${m.status}`).join('\n')
-    : "All systems operational.";
+    ? maintenanceRecords.map(m => `Location: ${m.area}, Status: ${m.status}, Details: ${m.description}`).join('\n')
+    : "The network is currently stable with no reported outages.";
 
-  const SYSTEM_PROMPT = `Role: EcoSpot Kenya ISP. Rule: Max 1 sentence. No greetings. Paybill: 400200. Network: ${maintenanceText}. If serious fault, add [SERIOUS_ISSUE].`;
+  // UPDATED: High-fidelity system prompt for a better conversational agent
+  const SYSTEM_PROMPT = `You are "EcoSpot AI", a friendly and highly skilled customer support agent for EcoSpot Kenya, a Wifi ISP. 
+
+PERSONALITY:
+- Professional, empathetic, and localized (use words like 'Jambo', 'Asante', or 'Pole').
+- You represent a local Kenyan business.
+
+KNOWLEDGE BASE:
+1. Fiber Monthly Plans: 
+   - Eco Basic: 6 Mbps @ KES 1,500
+   - Eco Pro: 20 Mbps @ KES 2,000
+   - Installation Fee: KES 4,500 (one-time).
+2. Hotspot Vouchers:
+   - 1 Hour: 10/-
+   - 12 Hours: 30/-
+   - 24 Hours: 60/-
+   - 1 Week: 280/-
+   - 1 Month: 750/-
+3. Payments:
+   - Paybill: 400200
+   - Account Number: Use your Mobile Phone Number.
+4. Troubleshooting:
+   - "LOS Red Light": This means a fiber signal break. Ask if the cable is bent or damaged.
+   - "Slow Internet": Advise to restart the router by unplugging for 30 seconds.
+   - "Not connecting": Check if the subscription is still active or expired.
+
+CURRENT NETWORK STATUS:
+${maintenanceText}
+
+CONVERSATION RULES:
+- Greet the user naturally if it's the start of the chat.
+- Provide clear, actionable advice.
+- Keep responses concise (2-4 sentences max).
+- If the customer mentions a physical break or "LOS Red Light", add [CRITICAL_FAULT] to your response.
+- Do NOT say "As an AI model". You ARE EcoSpot Support.`;
 
   try {
     const response = await ai.models.generateContent({
@@ -65,17 +100,21 @@ async function generateAIResponse(history, maintenanceRecords) {
         role: h.role === 'agent' || h.role === 'model' ? 'model' : 'user',
         parts: [{ text: h.content }]
       })),
-      config: { systemInstruction: SYSTEM_PROMPT, temperature: 0.1, maxOutputTokens: 100 }
+      config: { 
+        systemInstruction: SYSTEM_PROMPT,
+        temperature: 0.3, // Slightly higher for more natural variety
+        maxOutputTokens: 300
+      }
     });
 
-    const rawText = response.text || "";
-    return { 
-      text: rawText.replace("[SERIOUS_ISSUE]", "").trim(), 
-      isSerious: rawText.includes("[SERIOUS_ISSUE]") 
-    };
+    const rawText = response.text || "Jambo! EcoSpot Support here. How can I assist you with your internet today?";
+    const isSerious = rawText.includes("[CRITICAL_FAULT]");
+    const cleanText = rawText.replace("[CRITICAL_FAULT]", "").trim();
+    
+    return { text: cleanText, isSerious };
   } catch (e) {
-    addLog('ERROR', `AI Gen Error: ${e.message}`);
-    return { text: "Service busy, try again.", isSerious: false };
+    addLog('ERROR', `AI Engine Failure: ${e.message}`);
+    return { text: "I'm having a bit of trouble accessing our systems. Please try again in a few moments, Asante!", isSerious: false };
   }
 }
 
@@ -95,7 +134,7 @@ async function callEvolution(endpoint, method, body, customConfig = null) {
     });
     return res;
   } catch (e) {
-    addLog('ERROR', `Proxy Error`, { url, error: e.message });
+    addLog('ERROR', `Proxy Connection Refused`, { url, error: e.message });
     return null;
   }
 }
@@ -125,128 +164,110 @@ app.get('/api/instance/status', async (req, res) => {
 });
 
 // --- 7. WEBHOOK KERNEL ---
-// Added specific sub-paths found in logs: /api/sync/messages-upsert
 app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-upsert', '/messages-upsert'], async (req, res) => {
   let payload = req.body;
   res.status(200).send('ACK');
 
-  // Deep Parse: Handle cases where the JSON is stringified inside a 'body' property (common in some proxy setups)
+  // Handle nested/stringified payloads
   if (payload.body && typeof payload.body === 'string' && payload.body.includes('{')) {
-    try {
-      payload = JSON.parse(payload.body);
-      addLog('INFO', 'Extracted JSON from body string');
-    } catch (e) {}
+    try { payload = JSON.parse(payload.body); } catch (e) {}
   }
 
   const eventName = payload.event || 'none';
-  addLog('INFO', `Packet Received at ${req.path}: ${eventName}`, { 
-    keys: Object.keys(payload),
-    event: eventName 
-  });
+  addLog('INFO', `Traffic: ${eventName} on ${req.path}`);
 
-  // Catch-all for Evolution API message events
+  // Filtering logic
   const isMessageUpsert = eventName.toLowerCase().includes('upsert') || 
                           (payload.data && payload.data.messages) ||
                           (payload.messages);
 
-  if (!isMessageUpsert && !req.path.includes('sync')) {
-    addLog('INFO', `Filtered non-message event: ${eventName}`);
-    return;
-  }
+  if (!isMessageUpsert && !req.path.includes('sync')) return;
 
-  // Multi-Version Data Extraction
   const data = payload.data || payload;
   const messageObj = (data.messages ? data.messages[0] : data) || {};
   
-  if (!messageObj.key || messageObj.key.fromMe) {
-    addLog('INFO', 'Filtering outgoing or system message');
-    return;
-  }
+  if (!messageObj.key || messageObj.key.fromMe) return;
 
   const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
   const content = messageObj.message || {};
   const text = content.conversation || content.extendedTextMessage?.text || messageObj.text || '';
 
-  if (!jid || !text) {
-    addLog('INFO', 'Message structure incomplete or empty text', { jid, hasText: !!text });
-    return;
-  }
+  if (!jid || !text) return;
 
-  // Auto-Config Persistence from Metadata (if present)
+  // Auto-config from incoming packets if possible
   if (!evolutionConfig && payload.apikey && payload.server_url) {
     evolutionConfig = { 
       baseUrl: payload.server_url, 
       apiKey: payload.apikey, 
       instanceName: payload.instance || 'me' 
     };
-    addLog('INFO', 'Auto-configured API from webhook metadata');
+    addLog('INFO', 'Auto-discovery: API config updated from webhook.');
   }
 
   if (!evolutionConfig) {
-    addLog('ERROR', 'Dropped: No API Config. Save settings in dashboard first.');
+    addLog('ERROR', 'No configuration found. Please visit /settings and save your API details.');
     return;
   }
 
-  addLog('WEBHOOK', `Processing: "${text}"`, { from: jid });
+  addLog('WEBHOOK', `Chat From ${jid.split('@')[0]}: "${text}"`);
 
-  // Memory Management
+  // Memory Persistence
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 10) history.shift();
+  if (history.length > 15) history.shift(); // Slightly longer memory
 
   try {
     const target = jid.split('@')[0];
     
-    // Send presence typing indicator
+    // Set WhatsApp Presence to "Typing"
     await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
       number: target, 
       presence: 'composing' 
     });
     
-    // AI Content Generation
-    addLog('INFO', `Generating AI reply for ${target}...`);
+    // AI Reasoning
+    addLog('INFO', `AI Kernel thinking for ${target}...`);
     const { text: aiResponse, isSerious } = await generateAIResponse(history, maintenance);
     
     if (isSerious) {
       issues.push({ 
         id: Date.now().toString(), 
         customerPhone: target, 
-        location: 'AI Detected', 
+        location: 'Auto-Flagged', 
         description: text, 
         severity: 'Critical', 
         timestamp: new Date(), 
         status: 'Pending' 
       });
+      addLog('INFO', `Alert: Serious fault logged for customer ${target}`);
     }
 
     history.push({ role: 'agent', content: aiResponse });
 
-    // Send the reply back to WhatsApp
+    // Dispatch WhatsApp Reply
     const result = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
       number: jid, 
       text: aiResponse 
     });
 
     if (result && result.ok) {
-      addLog('SUCCESS', `Replied to ${target}`, { reply: aiResponse });
+      addLog('SUCCESS', `Response Sent to ${target}`, { reply: aiResponse });
     } else {
-      const errorText = await result?.text();
-      addLog('ERROR', 'Evolution API Rejected Send', { status: result?.status, error: errorText });
+      const errorData = await result?.text();
+      addLog('ERROR', 'Evolution API refused to send message.', { status: result?.status, error: errorData });
     }
   } catch (e) {
-    addLog('ERROR', `Kernel Exception: ${e.message}`);
+    addLog('ERROR', `Kernel Panic: ${e.message}`);
   }
 });
 
-// Serve static frontend
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
 app.listen(PORT, () => {
-  console.log(`\n--- EcoSpot ISP Server Node ---`);
-  console.log(`Status: Active`);
-  console.log(`Port: ${PORT}`);
-  console.log(`Webhook Endpoint: /api/sync`);
-  console.log(`-------------------------------\n`);
+  console.log(`\n================================`);
+  console.log(` EcoSpot ISP AI Node - ONLINE `);
+  console.log(` Port: ${PORT} `);
+  console.log(`================================\n`);
 });
