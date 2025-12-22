@@ -2,6 +2,8 @@
   "name": "EcoSpot ISP Agent Portal",
   "description": "A comprehensive customer support AI dashboard and simulator for EcoSpot Wifi ISP, featuring automated troubleshooting, plan management, and maintenance communication.",
   "requestFramePermissions": [
-    "microphone"
+    "microphone",
+    "camera",
+    "geolocation"
   ]
 }

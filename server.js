@@ -36,30 +36,14 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// --- 3. GLOBAL TRAFFIC INTERCEPTOR ---
-// This ensures that if ANY packet hits your server, you see it in the terminal
-app.use((req, res, next) => {
-  if (req.method === 'POST') {
-    const isStandardEndpoint = ['/api/sync', '/webhook', '/api/webhook', '/sync'].includes(req.path);
-    if (!isStandardEndpoint) {
-      addLog('INFO', `External Traffic: POST ${req.path}`, { 
-        ip: req.ip, 
-        headers: req.headers,
-        hasBody: !!req.body 
-      });
-    }
-  }
-  next();
-});
-
-// --- 4. SERVER STATE ---
+// --- 3. SERVER STATE ---
 let maintenance = [];
 let issues = [];
 let contacts = []; 
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-// --- 5. AI CORE (Server Side Only) ---
+// --- 4. AI CORE (Server Side Only) ---
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "undefined") {
@@ -95,7 +79,7 @@ async function generateAIResponse(history, maintenanceRecords) {
   }
 }
 
-// --- 6. EVOLUTION PROXY ---
+// --- 5. EVOLUTION PROXY ---
 async function callEvolution(endpoint, method, body, customConfig = null) {
   const cfg = customConfig || evolutionConfig;
   if (!cfg) return null;
@@ -116,7 +100,7 @@ async function callEvolution(endpoint, method, body, customConfig = null) {
   }
 }
 
-// --- 7. ROUTES ---
+// --- 6. ROUTES ---
 app.get('/api/data', (req, res) => res.json({ maintenance, issues, contacts, config: evolutionConfig }));
 app.get('/api/logs', (req, res) => res.json(webhookLogs.slice(0, 150)));
 app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
@@ -140,12 +124,13 @@ app.get('/api/instance/status', async (req, res) => {
   res.json({ status: "ERROR" });
 });
 
-// --- 8. WEBHOOK KERNEL ---
-app.post(['/api/sync', '/webhook', '/api/webhook', '/sync'], async (req, res) => {
+// --- 7. WEBHOOK KERNEL ---
+// Added specific sub-paths found in logs: /api/sync/messages-upsert
+app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-upsert', '/messages-upsert'], async (req, res) => {
   let payload = req.body;
   res.status(200).send('ACK');
 
-  // Handle Wrapped Payloads
+  // Deep Parse: Handle cases where the JSON is stringified inside a 'body' property (common in some proxy setups)
   if (payload.body && typeof payload.body === 'string' && payload.body.includes('{')) {
     try {
       payload = JSON.parse(payload.body);
@@ -154,10 +139,18 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync'], async (req, res) =>
   }
 
   const eventName = payload.event || 'none';
-  addLog('INFO', `Packet Received: ${eventName}`, { payloadKeys: Object.keys(payload) });
+  addLog('INFO', `Packet Received at ${req.path}: ${eventName}`, { 
+    keys: Object.keys(payload),
+    event: eventName 
+  });
 
-  if (!eventName.toLowerCase().includes('upsert') && !req.path.includes('sync')) {
-    addLog('INFO', `Filtering non-message event: ${eventName}`);
+  // Catch-all for Evolution API message events
+  const isMessageUpsert = eventName.toLowerCase().includes('upsert') || 
+                          (payload.data && payload.data.messages) ||
+                          (payload.messages);
+
+  if (!isMessageUpsert && !req.path.includes('sync')) {
+    addLog('INFO', `Filtered non-message event: ${eventName}`);
     return;
   }
 
@@ -166,7 +159,7 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync'], async (req, res) =>
   const messageObj = (data.messages ? data.messages[0] : data) || {};
   
   if (!messageObj.key || messageObj.key.fromMe) {
-    addLog('INFO', 'Filtering outgoing/system message');
+    addLog('INFO', 'Filtering outgoing or system message');
     return;
   }
 
@@ -175,14 +168,18 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync'], async (req, res) =>
   const text = content.conversation || content.extendedTextMessage?.text || messageObj.text || '';
 
   if (!jid || !text) {
-    addLog('INFO', 'Message structure incomplete', { jid, textLength: text.length });
+    addLog('INFO', 'Message structure incomplete or empty text', { jid, hasText: !!text });
     return;
   }
 
-  // Auto-Config
+  // Auto-Config Persistence from Metadata (if present)
   if (!evolutionConfig && payload.apikey && payload.server_url) {
-    evolutionConfig = { baseUrl: payload.server_url, apiKey: payload.apikey, instanceName: payload.instance || 'me' };
-    addLog('INFO', 'Auto-configured API from metadata');
+    evolutionConfig = { 
+      baseUrl: payload.server_url, 
+      apiKey: payload.apikey, 
+      instanceName: payload.instance || 'me' 
+    };
+    addLog('INFO', 'Auto-configured API from webhook metadata');
   }
 
   if (!evolutionConfig) {
@@ -192,7 +189,7 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync'], async (req, res) =>
 
   addLog('WEBHOOK', `Processing: "${text}"`, { from: jid });
 
-  // AI Logic
+  // Memory Management
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
@@ -200,26 +197,56 @@ app.post(['/api/sync', '/webhook', '/api/webhook', '/sync'], async (req, res) =>
 
   try {
     const target = jid.split('@')[0];
-    await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { number: target, presence: 'composing' });
     
+    // Send presence typing indicator
+    await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
+      number: target, 
+      presence: 'composing' 
+    });
+    
+    // AI Content Generation
+    addLog('INFO', `Generating AI reply for ${target}...`);
     const { text: aiResponse, isSerious } = await generateAIResponse(history, maintenance);
+    
     if (isSerious) {
-      issues.push({ id: Date.now().toString(), customerPhone: target, location: 'AI Detect', description: text, severity: 'Critical', timestamp: new Date(), status: 'Pending' });
+      issues.push({ 
+        id: Date.now().toString(), 
+        customerPhone: target, 
+        location: 'AI Detected', 
+        description: text, 
+        severity: 'Critical', 
+        timestamp: new Date(), 
+        status: 'Pending' 
+      });
     }
 
     history.push({ role: 'agent', content: aiResponse });
-    const result = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { number: jid, text: aiResponse });
+
+    // Send the reply back to WhatsApp
+    const result = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
+      number: jid, 
+      text: aiResponse 
+    });
 
     if (result && result.ok) {
       addLog('SUCCESS', `Replied to ${target}`, { reply: aiResponse });
     } else {
-      addLog('ERROR', 'API Send Failed', { status: result?.status });
+      const errorText = await result?.text();
+      addLog('ERROR', 'Evolution API Rejected Send', { status: result?.status, error: errorText });
     }
   } catch (e) {
-    addLog('ERROR', `Kernel Panic: ${e.message}`);
+    addLog('ERROR', `Kernel Exception: ${e.message}`);
   }
 });
 
+// Serve static frontend
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
-app.listen(PORT, () => console.log(`EcoSpot ISP Server Active on Port ${PORT}`));
+
+app.listen(PORT, () => {
+  console.log(`\n--- EcoSpot ISP Server Node ---`);
+  console.log(`Status: Active`);
+  console.log(`Port: ${PORT}`);
+  console.log(`Webhook Endpoint: /api/sync`);
+  console.log(`-------------------------------\n`);
+});
