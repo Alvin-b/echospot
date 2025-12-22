@@ -48,7 +48,7 @@ async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === "undefined") {
     addLog('ERROR', 'AI Error: Missing API_KEY on server.');
-    return { text: "Jambo! Our automated systems are currently restarting. Please contact our support team at 0700 000 000 if you need urgent help.", escalationReason: null };
+    return { text: "Our automated systems are currently restarting. Please contact our support team at 0700 000 000 if you need urgent help. Asante.", escalationReason: null };
   }
   
   const ai = new GoogleGenAI({ apiKey });
@@ -62,30 +62,31 @@ async function generateAIResponse(history, maintenanceRecords) {
     ? `KNOWN NETWORK ISSUES:\n${activeOutages}`
     : "No widespread outages are currently reported. The network backbone is operational.";
 
-  const SYSTEM_PROMPT = `You are "EcoSpot AI", a senior customer support engineer for EcoSpot Wifi ISP in Kenya. 
+  const SYSTEM_PROMPT = `You are "EcoSpot AI", a senior customer support specialist for EcoSpot Wifi ISP in Kenya. 
 
-CONVERSATIONAL RULES (IMPORTANT):
-1. **Human-like Tone**: Do NOT start every message with "Jambo!". It sounds robotic. Greet naturally. If you already said hello in the conversation history, don't repeat it. Use variations like "Habari", "Mambo", "Sasa", or simply acknowledge their request directly (e.g., "Asante for asking about that...").
-2. **NO TRUNCATION**: Never stop mid-sentence. Ensure every thought is completed. If you provide a price or a location, finish the full sentence.
-3. **Local Flavor**: Be warm and empathetic. Use "Pole sana" for trouble and "Karibu" for thanks. 
+CONVERSATIONAL RULES (CRITICAL):
+1. **GREETING VARIETY**: DO NOT start every response with "Jambo!". If the conversation has already started, do not use a formal greeting at all. Jump straight into the answer. 
+   - If you must greet, use variety: "Habari", "Sasa", "Mambo", or simply acknowledge the previous statement.
+   - NEVER repeat the same greeting twice in one conversation.
+2. **NO TRUNCATION**: You must finish every sentence. If you mention a price (e.g., 4,500 KES), you must finish the sentence explaining what it is for. If you mention a location (e.g., Kutus), finish the thought.
+3. **DIRECT ANSWERS**: Prioritize answering the user's specific question immediately. Do not hide the answer behind pleasantries.
 
 ECOSPOT DATA:
 - Fiber Plans: Eco Basic (6Mbps - 1,500 KES), Eco Pro (20Mbps - 2,000 KES). Installation: 4,500 KES.
 - Hotspot Vouchers: 1Hr (10/-), 24Hrs (60/-), 1Wk (280/-), 1Mo (750/-).
 - Payments: M-Pesa Paybill 400200. Account: Customer Phone Number.
-- Coverage: Primary coverage is currently in Kutus and surrounding areas. We are expanding soon!
+- Coverage: Primary coverage is currently in Kutus and surrounding areas. Expansion to other towns like Murang'a is in the planning phase but not yet active.
 
 DIAGNOSTICS & ESCALATION:
-Check the history carefully. 
-- If the user says they ALREADY restarted the router or tried your advice and it failed, ESCALATE.
-- If the problem is "every day", "constantly", or "always slow", it is a persistent fault. ESCALATE.
-- If physical damage (cut cables) is reported, ESCALATE.
+Analyze the history.
+- If the user says they ALREADY tried a step (like restarting) and it failed, ESCALATE.
+- If the user says the problem is recurring ("every day", "always slow"), ESCALATE.
+- If physical infrastructure damage is mentioned, ESCALATE.
 
 ESCALATION FORMAT:
 If a rule is met, append: "[ESCALATE: <One sentence specific reason>]" to the end of your message. 
-Example: "I'm sorry that the restart didn't fix your 6Mbps speed. I've logged this for a senior technician to check your line immediately. [ESCALATE: Troubleshooting failed - Router restart ineffective]"
 
-CURRENT NETWORK STATE:
+NETWORK STATUS:
 ${maintenanceContext}`;
 
   try {
@@ -97,12 +98,12 @@ ${maintenanceContext}`;
       })),
       config: { 
         systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.7, // Higher for more natural variety
+        temperature: 0.8, // Slightly higher for more variety
         maxOutputTokens: 1024
       }
     });
 
-    const rawText = response.text || "Jambo! I am here to help. Could you tell me more about your connection issues?";
+    const rawText = response.text || "I'm here to help you. Could you please clarify your request? Asante.";
     
     // Parse Escalation
     const escalationMatch = rawText.match(/\[ESCALATE: (.*?)\]/);
@@ -112,7 +113,7 @@ ${maintenanceContext}`;
     return { text: cleanText, escalationReason };
   } catch (e) {
     addLog('ERROR', `AI Core Error: ${e.message}`);
-    return { text: "Jambo! I'm having a small technical hitch responding to that. Please ask again in a moment. Asante.", escalationReason: null };
+    return { text: "I'm having a slight hitch responding to that. Please try again. Asante.", escalationReason: null };
   }
 }
 
