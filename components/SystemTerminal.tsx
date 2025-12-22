@@ -10,11 +10,12 @@ const SystemTerminal: React.FC = () => {
   useEffect(() => {
     const fetchLogs = async () => {
       const data = await dataService.getLogs();
-      // Filter for incoming (WEBHOOK), outgoing (SUCCESS), and errors (ERROR)
+      // Filter for all relevant communication and system events
       const filtered = data.filter(log => 
-        (log.type === 'WEBHOOK' && log.details?.text) || 
-        (log.type === 'SUCCESS' && log.details?.text) ||
-        (log.type === 'ERROR')
+        (log.type === 'WEBHOOK') || 
+        (log.type === 'SUCCESS') ||
+        (log.type === 'ERROR') ||
+        (log.type === 'INFO')
       );
       setLogs(filtered);
     };
@@ -31,8 +32,8 @@ const SystemTerminal: React.FC = () => {
     <div className="flex flex-col h-full space-y-4 max-w-6xl mx-auto">
       <div className="flex justify-between items-center px-4">
         <div>
-          <h2 className="text-2xl font-black text-slate-800 tracking-tight">System Monitor & Terminal</h2>
-          <p className="text-slate-500 text-sm font-medium">Real-time trace of conversations and system exceptions.</p>
+          <h2 className="text-2xl font-black text-slate-800 tracking-tight">System Terminal</h2>
+          <p className="text-slate-500 text-sm font-medium">Real-time kernel trace of all webhook events and agent logic.</p>
         </div>
         <div className="bg-emerald-100 text-emerald-700 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border border-emerald-200">
           <span className="w-2 h-2 bg-emerald-500 rounded-full inline-block mr-2 animate-pulse"></span>
@@ -47,10 +48,10 @@ const SystemTerminal: React.FC = () => {
             <div className="w-3 h-3 bg-rose-500/50 rounded-full"></div>
             <div className="w-3 h-3 bg-amber-500/50 rounded-full"></div>
             <div className="w-3 h-3 bg-emerald-500/50 rounded-full"></div>
-            <span className="ml-4 text-emerald-500/70 font-bold uppercase tracking-widest text-[10px]">ECOSPOT_V4_CORE_TRACE</span>
+            <span className="ml-4 text-emerald-500/70 font-bold uppercase tracking-widest text-[10px]">ECOSPOT_V4_KERNEL_TRACE</span>
           </div>
           <div className="text-slate-500 text-[9px] uppercase font-bold">
-            Root Access / Debug Mode
+            Live Diagnostics
           </div>
         </div>
 
@@ -59,9 +60,9 @@ const SystemTerminal: React.FC = () => {
           {logs.slice().reverse().map((log) => {
             const isIncoming = log.type === 'WEBHOOK';
             const isError = log.type === 'ERROR';
-            const isSuccess = log.type === 'SUCCESS';
+            const isInfo = log.type === 'INFO';
             
-            const sender = log.details?.jid || log.details?.attemptedNumber || 'System';
+            const sender = log.details?.jid || log.details?.number || 'System';
             const number = sender.split('@')[0];
             const text = log.details?.text || log.message || '';
 
@@ -69,29 +70,34 @@ const SystemTerminal: React.FC = () => {
               <div 
                 key={log.id} 
                 className={`flex flex-col space-y-2 animate-in slide-in-from-left-4 duration-300 ${
-                  isError ? 'items-center w-full' : isIncoming ? 'items-start' : 'items-end'
+                  isError || isInfo ? 'items-center w-full' : isIncoming ? 'items-start' : 'items-end'
                 }`}
               >
                 <div className={`flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest ${
-                  isError ? 'text-rose-400' : isIncoming ? 'text-blue-400' : 'text-emerald-400'
+                  isError ? 'text-rose-400' : 
+                  isInfo ? 'text-slate-500' :
+                  isIncoming ? 'text-blue-400' : 'text-emerald-400'
                 }`}>
-                  <span className="text-slate-600">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                  <span className="text-slate-700">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
                   <span>
-                    {isError ? `!!! CRITICAL ERROR [CORE]` : 
-                     isIncoming ? `<<< INBOUND FROM [${number}]` : 
-                     `>>> OUTBOUND TO [${number}]`}
+                    {isError ? `!!! CRITICAL ERROR` : 
+                     isInfo ? `--- SYSTEM TRACE` :
+                     isIncoming ? `<<< INBOUND [${number}]` : 
+                     `>>> OUTBOUND [${number}]`}
                   </span>
                 </div>
                 
                 <div className={`max-w-[85%] p-4 rounded-2xl border ${
                   isError 
                     ? 'bg-rose-500/10 border-rose-500/30 text-rose-100 w-full font-mono' 
-                    : isIncoming 
-                      ? 'bg-blue-500/5 border-blue-500/20 text-blue-100 rounded-tl-none' 
-                      : 'bg-emerald-500/5 border-emerald-500/20 text-emerald-100 rounded-tr-none'
+                    : isInfo
+                      ? 'bg-slate-900 border-slate-800 text-slate-400 w-full text-center py-2 italic border-dashed'
+                      : isIncoming 
+                        ? 'bg-blue-500/5 border-blue-500/20 text-blue-100 rounded-tl-none' 
+                        : 'bg-emerald-500/5 border-emerald-500/20 text-emerald-100 rounded-tr-none'
                 }`}>
                   {isError ? (
-                    <div className="space-y-2">
+                    <div className="space-y-2 text-left">
                       <p className="text-rose-400 font-black">EXCEPTION DETECTED:</p>
                       <p className="text-[12px]">{log.message}</p>
                       {log.details && (
@@ -100,6 +106,8 @@ const SystemTerminal: React.FC = () => {
                         </pre>
                       )}
                     </div>
+                  ) : isInfo ? (
+                    <p className="text-[11px] font-bold">{log.message}</p>
                   ) : (
                     <p className="text-[13px] leading-relaxed font-medium">
                       {text}
@@ -114,7 +122,7 @@ const SystemTerminal: React.FC = () => {
             <div className="h-full flex flex-col items-center justify-center space-y-4 opacity-30 py-20">
               <div className="w-16 h-16 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin"></div>
               <p className="text-emerald-500 font-bold uppercase tracking-widest text-sm">Initializing Protocol...</p>
-              <p className="text-slate-500 text-[10px] max-w-xs text-center">Waiting for communication packets or system exceptions to hit the kernel.</p>
+              <p className="text-slate-500 text-[10px] max-w-xs text-center">Awaiting data packets from Evolution API.</p>
             </div>
           )}
           <div ref={terminalEndRef} />
@@ -124,7 +132,7 @@ const SystemTerminal: React.FC = () => {
         <div className="absolute inset-0 pointer-events-none opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,128,0.06))] bg-[length:100%_2px,3px_100%]"></div>
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-2">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 px-2 pb-10">
         <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-800 flex items-center gap-4">
           <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-blue-400">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/></svg>
@@ -154,13 +162,11 @@ const SystemTerminal: React.FC = () => {
         </div>
         <div className="bg-slate-900/50 p-4 rounded-2xl border border-slate-800 flex items-center gap-4">
           <div className="w-10 h-10 bg-amber-500/10 rounded-xl flex items-center justify-center text-amber-400">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
           </div>
           <div>
-            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Health</p>
-            <p className="text-sm font-bold text-white">
-              {logs.filter(l => l.type === 'ERROR').length > 0 ? 'WARNING' : 'STABLE'}
-            </p>
+            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Efficiency</p>
+            <p className="text-sm font-bold text-white">OPTIMAL</p>
           </div>
         </div>
       </div>
