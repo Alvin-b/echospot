@@ -36,7 +36,18 @@ function addLog(type, message, details = null) {
   console.log(`[${type}] ${message}`);
 }
 
-// --- 3. SERVER STATE ---
+// --- 3. GLOBAL REQUEST TRACER ---
+// This ensures that if ANY request hits the sync URL, we see it in the terminal.
+app.all(['/api/sync', '/messages-upsert', '/webhook'], (req, res, next) => {
+  addLog('INFO', `Inbound Request: ${req.method} ${req.path}`, {
+    headers: req.headers,
+    ip: req.ip,
+    query: req.query
+  });
+  next();
+});
+
+// --- 4. SERVER STATE ---
 let maintenance = [];
 let issues = [];
 let contacts = []; 
@@ -104,7 +115,7 @@ async function callEvolution(endpoint, method, body, customConfig = null) {
   }
 }
 
-// --- 4. ROUTES ---
+// --- 5. ROUTES ---
 app.get('/api/data', (req, res) => res.json({ maintenance, issues, contacts, config: evolutionConfig }));
 app.get('/api/logs', (req, res) => res.json(webhookLogs.slice(0, 150)));
 app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
@@ -126,31 +137,40 @@ app.get('/api/instance/status', async (req, res) => {
   } catch (e) { res.json({ status: "ERROR", message: e.message }); }
 });
 
-// --- 5. WEBHOOK LOGIC ---
+// --- 6. WEBHOOK LOGIC ---
 app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
-  const payload = req.body || {};
+  let payload = req.body || {};
   res.status(200).send('ACK');
+
+  // HANDLE WRAPPED PAYLOADS: If the payload looks like { method: "POST", body: "{...}" }
+  if (payload.body && typeof payload.body === 'string' && payload.body.includes('{')) {
+    try {
+      addLog('INFO', 'Detecting wrapped payload, attempting to parse inner body...');
+      payload = JSON.parse(payload.body);
+    } catch (e) {
+      addLog('ERROR', 'Failed to parse wrapped body string.', { error: e.message });
+    }
+  }
 
   const eventName = payload.event || 'none';
   const isMsgEvent = eventName.toLowerCase().includes('messages.upsert') || req.path.includes('messages-upsert');
   
   if (!isMsgEvent) {
-    addLog('INFO', `Ignoring non-message event: ${eventName}`);
+    addLog('INFO', `Event Filtered: ${eventName}`);
     return;
   }
 
-  // Support both standard and provided payload structures
   const messageData = payload.data || {};
+  // Handle case where Evolution sends 'messages' array or direct object
   const messageObj = (messageData.messages ? messageData.messages[0] : messageData) || {};
 
   if (!messageObj.key) {
-    addLog('ERROR', 'Malformed Webhook: Missing message key structure.');
+    addLog('ERROR', 'Malformed Webhook Structure', { payloadPreview: JSON.stringify(payload).substring(0, 200) });
     return;
   }
 
-  // Evolution often sends 'fromMe' - filter it to avoid loops
   if (messageObj.key.fromMe === true) {
-    addLog('INFO', 'Ignoring outgoing message (fromMe: true)');
+    addLog('INFO', 'Ignored: Outgoing message detected.');
     return;
   }
 
@@ -159,66 +179,59 @@ app.post(['/api/sync', '/messages-upsert', '/webhook'], async (req, res) => {
   const text = msgContent.conversation || msgContent.extendedTextMessage?.text || messageObj.text || '';
 
   if (!jid || !text) {
-    addLog('INFO', 'Skipping: Message empty or sender JID missing.', { jid, text });
+    addLog('INFO', 'Ignored: Message content or JID missing.', { jid, text });
     return;
   }
 
-  // --- Auto-Config logic: If user hasn't set settings, try to use what's in the webhook ---
-  let activeConfig = evolutionConfig;
-  if (!activeConfig && payload.apikey && payload.server_url) {
-    addLog('INFO', 'Local config missing. Attempting Auto-Config from Webhook data.');
-    activeConfig = {
+  // Auto-Config Persistence
+  if (!evolutionConfig && payload.apikey && payload.server_url) {
+    addLog('INFO', 'Auto-Configuring from webhook metadata.');
+    evolutionConfig = {
       baseUrl: payload.server_url,
       apiKey: payload.apikey,
       instanceName: payload.instance || 'me'
     };
   }
 
-  if (!activeConfig) {
-    addLog('ERROR', 'Cannot process message: No Evolution API settings found in app or webhook.');
+  if (!evolutionConfig) {
+    addLog('ERROR', 'Config Missing: Please set API settings or ensure webhook sends apikey/server_url');
     return;
   }
 
-  addLog('WEBHOOK', `Message Received from ${jid}`, { jid, text });
+  addLog('WEBHOOK', `Processing Message: "${text}"`, { jid });
 
-  // History Management
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 6) history.shift();
+  if (history.length > 8) history.shift();
 
   try {
     const targetNumber = jid.split('@')[0];
     
-    // Typing indicator
-    await callEvolution(`/chat/sendPresence/${activeConfig.instanceName}`, 'POST', { 
+    await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
       number: targetNumber, presence: 'composing' 
-    }, activeConfig);
+    });
 
-    // AI Generation
-    addLog('INFO', `Requesting AI response for ${targetNumber}`);
     const { text: aiResponse } = await generateAIResponse(history, maintenance);
     history.push({ role: 'agent', content: aiResponse });
 
-    // Send Result
-    addLog('INFO', `Dispatching response to Evolution...`);
-    const sendResult = await callEvolution(`/message/sendText/${activeConfig.instanceName}`, 'POST', { 
-      number: jid, // Use full JID for reliability
+    const sendResult = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
+      number: jid, 
       text: aiResponse 
-    }, activeConfig);
+    });
 
     if (sendResult && sendResult.ok) {
       addLog('SUCCESS', `Replied to ${targetNumber}`, { jid, text: aiResponse });
     } else {
       const errText = await sendResult?.text();
-      addLog('ERROR', `Evolution API rejected response!`, { 
+      addLog('ERROR', `Evolution API Rejected Send`, { 
         status: sendResult?.status, 
-        responseBody: errText,
-        number: targetNumber
+        response: errText,
+        target: targetNumber
       });
     }
   } catch (e) {
-    addLog('ERROR', `Processing Exception: ${e.message}`);
+    addLog('ERROR', `Critical Processing Exception`, { error: e.message });
   }
 });
 
