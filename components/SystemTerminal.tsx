@@ -28,7 +28,7 @@ const SystemTerminal: React.FC = () => {
       <div className="flex justify-between items-center px-4">
         <div>
           <h2 className="text-2xl font-black text-slate-800 tracking-tight">EcoSpot Core Terminal</h2>
-          <p className="text-slate-500 text-sm font-medium">Monitoring server-side AI logic and Evolution Webhook packets.</p>
+          <p className="text-slate-500 text-sm font-medium">Monitoring raw traffic and AI kernel processing.</p>
         </div>
         <div className="flex items-center gap-4">
            <div className="text-right">
@@ -51,7 +51,7 @@ const SystemTerminal: React.FC = () => {
             <span className="ml-4 text-emerald-500/70 font-bold uppercase tracking-widest text-[10px]">ECOSPOT_v4_KERNEL_LOG</span>
           </div>
           <div className="flex items-center gap-4">
-            <span className="text-slate-600 text-[9px] font-bold tracking-widest">DAEMON: RUNNING</span>
+            <span className="text-slate-600 text-[9px] font-bold tracking-widest uppercase">Kernel Mode: Verbose</span>
           </div>
         </div>
 
@@ -62,7 +62,7 @@ const SystemTerminal: React.FC = () => {
             const isSuccess = log.type === 'SUCCESS';
             const isInfo = log.type === 'INFO';
             
-            const sender = log.details?.sender || log.details?.number || 'SYSTEM';
+            const sender = log.details?.sender || log.details?.number || log.details?.from || 'SYSTEM';
             const number = sender.split('@')[0];
             const text = log.details?.reply || log.details?.text || log.message || '';
 
@@ -75,7 +75,7 @@ const SystemTerminal: React.FC = () => {
               >
                 <div className={`flex items-center gap-3 text-[9px] font-bold uppercase tracking-widest ${
                   isError ? 'text-rose-400' : 
-                  isInfo ? 'text-slate-500' :
+                  isInfo ? 'text-slate-600' :
                   isWebhook ? 'text-blue-500' : 'text-emerald-500'
                 }`}>
                   <span className="text-slate-800">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
@@ -83,7 +83,7 @@ const SystemTerminal: React.FC = () => {
                     {isError ? `! FAULT` : 
                      isInfo ? `* TRACE` :
                      isWebhook ? `<< WEBHOOK [${number}]` : 
-                     `>> EVOLUTION [${number}]`}
+                     `>> DISPATCH [${number}]`}
                   </span>
                 </div>
                 
@@ -91,7 +91,7 @@ const SystemTerminal: React.FC = () => {
                   isError 
                     ? 'bg-rose-500/5 border-rose-500/20 text-rose-200 w-full' 
                     : isInfo
-                      ? 'bg-slate-900/30 border-slate-800/50 text-slate-500 w-full text-[10px] font-bold py-2 px-4'
+                      ? 'bg-slate-900/40 border-slate-800/50 text-slate-500 w-full text-[10px] font-bold py-2 px-4 border-dashed'
                       : isWebhook 
                         ? 'bg-blue-500/5 border-blue-500/10 text-blue-100 rounded-tl-none' 
                         : 'bg-emerald-500/5 border-emerald-500/10 text-emerald-100 rounded-tr-none'
@@ -106,9 +106,12 @@ const SystemTerminal: React.FC = () => {
                       )}
                     </div>
                   ) : (
-                    <p className="text-[12px] leading-relaxed">
-                      {text}
-                    </p>
+                    <div className="space-y-1">
+                      <p className="text-[12px] leading-relaxed">{text}</p>
+                      {isInfo && log.details && (
+                        <p className="text-[9px] opacity-50 font-mono truncate">{JSON.stringify(log.details)}</p>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>
@@ -118,7 +121,7 @@ const SystemTerminal: React.FC = () => {
           {logs.length === 0 && (
             <div className="h-full flex flex-col items-center justify-center space-y-6 opacity-30 py-32">
               <div className="w-12 h-12 border-2 border-emerald-500/10 border-t-emerald-500 rounded-full animate-spin"></div>
-              <p className="text-slate-600 text-[10px] uppercase font-black tracking-[0.2em]">Awaiting Packets...</p>
+              <p className="text-slate-600 text-[10px] uppercase font-black tracking-[0.2em]">Listening for traffic...</p>
             </div>
           )}
           <div ref={terminalEndRef} />
