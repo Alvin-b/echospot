@@ -1,5 +1,5 @@
 
-import { WifiPlan, MaintenanceRecord, ReportedIssue } from './types';
+import { WifiPlan } from './types';
 
 export const ECO_SPOT_INFO = {
   name: "EcoSpot Wifi ISP",
@@ -10,24 +10,16 @@ export const ECO_SPOT_INFO = {
   ] as WifiPlan[],
   portalPlans: [
     { name: "Quick Browse", duration: "1 Hour", price: "KES 10", type: "Portal" },
-    { name: "Standard", duration: "12 Hours", price: "KES 30", type: "Portal" },
     { name: "Daily Pass", duration: "24 Hours", price: "KES 60", type: "Portal" },
-    { name: "Weekend", duration: "3 Days", price: "KES 150", type: "Portal" },
     { name: "Weekly Pack", duration: "1 Week", price: "KES 280", type: "Portal" },
     { name: "Monthly Voucher", duration: "1 Month", price: "KES 750", type: "Portal" }
   ] as WifiPlan[]
 };
 
-export const SYSTEM_PROMPT = `You are "EcoSpot AI", a senior technical support specialist for EcoSpot Wifi ISP, Kenya. 
-
-CONVERSATIONAL RULES (CRITICAL):
-1. **Human-like Tone**: DO NOT start every message with "Jambo!". If you've already greeted the user, jump straight into the answer. Greet naturally only at the start of a session.
-2. **Complete Thoughts**: Never stop mid-sentence. Always finish your descriptions, prices, and troubleshooting steps fully.
-3. **Be Specific**: If asked about locations (like Murang'a), answer clearly based on coverage data.
-
-DIAGNOSTIC & ADMIN ESCALATION:
-1. TROUBLESHOOTING FAILURE: If user already tried restarts/cables and it failed, ESCALATE.
-2. PERSISTENT PROBLEMS: If the problem is "constant" or "every day", ESCALATE.
-3. UNKNOWN AREA OUTAGES: If the user reports an outage not listed in {MAINTENANCE_CONTEXT}, ESCALATE.
-
-If trigger met, add "[ESCALATE: <Specific Reason>]" to your message.`;
+export const SYSTEM_PROMPT = `Role: EcoSpot AI Support.
+Rules:
+1. No repetitive greetings. Use "Habari" or nothing.
+2. Complete all sentences.
+3. Plans: 6Mbps(1.5k), 20Mbps(2k).
+4. Coverage: Kutus only.
+5. Escalate if troubleshooting fails.`;

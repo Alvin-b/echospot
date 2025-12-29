@@ -11,240 +11,136 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- 1. BODY PARSERS ---
-app.use(express.json({
-  limit: '10mb',
-  verify: (req, res, buf) => { 
-    req.rawBody = buf.toString(); 
-  }
-}));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cors());
 
-// --- 2. LOGGING SYSTEM ---
 let webhookLogs = []; 
 function addLog(type, message, details = null) {
-  const log = {
-    id: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-    timestamp: new Date().toISOString(),
-    type,
-    message,
-    details
-  };
+  const log = { id: Math.random().toString(36).substr(2, 9), timestamp: new Date().toISOString(), type, message, details };
   webhookLogs.unshift(log);
-  if (webhookLogs.length > 500) webhookLogs.pop(); 
-  console.log(`[${type}] ${message}`);
+  if (webhookLogs.length > 200) webhookLogs.pop();
 }
 
-// --- 3. SERVER STATE (Mock Database) ---
 let maintenance = [];
 let issues = [];
-let contacts = []; 
 let evolutionConfig = null;
 const userMemory = new Map(); 
 
-// --- 4. AI CORE (Optimized for Quota & Human-Like Flow) ---
+// --- AI KERNEL (Optimized for lowest cost/token usage) ---
 async function generateAIResponse(history, maintenanceRecords) {
   const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "undefined") {
-    addLog('ERROR', 'AI Error: Missing API_KEY on server.');
-    return { text: "Our systems are currently under maintenance. Please call 0700 000 000 for urgent support. Asante.", escalationReason: null };
-  }
+  if (!apiKey) return { text: "Service temporarily offline. Call 0700000000.", escalationReason: null };
   
   const ai = new GoogleGenAI({ apiKey });
-  
-  const activeOutages = maintenanceRecords
-    .filter(m => m.status === 'Outage' || m.status === 'In Progress')
-    .map(m => `- ${m.area}: ${m.description} (Resolution: ${m.estimatedResolution || 'TBD'})`)
-    .join('\n');
+  const activeOutages = maintenanceRecords.filter(m => m.status !== 'Completed').map(m => `${m.area}: ${m.description}`).join('; ');
 
-  const maintenanceContext = activeOutages.length > 0 
-    ? `KNOWN NETWORK ISSUES:\n${activeOutages}`
-    : "The network backbone is healthy. No widespread outages reported.";
-
-  const SYSTEM_PROMPT = `You are "EcoSpot AI", the senior support agent for EcoSpot Wifi ISP, Kenya. 
-
-CONVERSATIONAL RULES:
-1. **NO REPETITIVE GREETINGS**: Do NOT start every reply with "Jambo!". If the user says "Hi", say "Jambo" or "Habari". If the user asks a question after that, answer it DIRECTLY without a greeting. 
-2. **STAY CONCISE**: Use simple, natural Kenyan English. Don't be too robotic.
-3. **COMPLETE THOUGHTS**: Finish every sentence. If quoting a price (e.g. 1,500 KES), explain what it buys.
-4. **COVERAGE**: We are in Kutus. Murang'a is NOT covered yet.
-
-DIAGNOSTICS:
-- If troubleshooting (restarts, cables) fails or user says they already tried it, ESCALATE.
-- If the problem is "constant" or "every day", ESCALATE.
-
-ESCALATE FORMAT: Append "[ESCALATE: <Reason>]" only if needed.`;
+  const PROMPT = `Role: EcoSpot AI (ISP Support Kenya). 
+Tone: Helpful, human, local. 
+Rules: 
+- No repetitive "Jambo". Greet only if needed. 
+- Answer directly.
+- Fiber: 6Mbps(1.5k), 20Mbps(2k). Install: 4.5k.
+- Vouchers: 1Hr(10), 24h(60), 1Wk(280), 1Mo(750).
+- Coverage: Kutus only. NO Murang'a.
+- Outages: ${activeOutages || 'None'}.
+- Escalate: If troubleshooting fails or problem is "constant". 
+Format: Text... [ESCALATE: <reason>] if applicable.`;
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview', // CHANGED: Flash has MUCH higher free-tier quotas than Pro
+      model: 'gemini-flash-lite-latest', // Lowest cost/highest free quota model
       contents: history.map(h => ({
-        role: h.role === 'agent' || h.role === 'model' ? 'model' : 'user',
+        role: h.role === 'agent' ? 'model' : 'user',
         parts: [{ text: h.content }]
       })),
       config: { 
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.7,
-        maxOutputTokens: 800
+        systemInstruction: PROMPT,
+        temperature: 0.6,
+        maxOutputTokens: 400 // Reduced to save cost
       }
     });
 
-    const rawText = response.text || "I'm checking that for you. What exactly is the issue with your connection?";
-    
-    // Parse Escalation
+    const rawText = response.text || "Checking that for you...";
     const escalationMatch = rawText.match(/\[ESCALATE: (.*?)\]/);
-    const escalationReason = escalationMatch ? escalationMatch[1] : null;
-    const cleanText = rawText.replace(/\[ESCALATE: .*?\]/g, "").trim();
-    
-    return { text: cleanText, escalationReason };
+    return { 
+      text: rawText.replace(/\[ESCALATE: .*?\]/g, "").trim(), 
+      escalationReason: escalationMatch ? escalationMatch[1] : null 
+    };
   } catch (e) {
-    const isQuotaError = e.message?.includes('429') || e.message?.includes('quota');
-    if (isQuotaError) {
-      addLog('ERROR', 'Gemini Quota Exceeded (429). Switch to paid or wait for reset.');
-      return { text: "Pole sana, my response engine is a bit busy right now. Please try again in 1 minute or call our office directly for immediate help. Asante.", escalationReason: null };
-    }
-    addLog('ERROR', `AI Core Error: ${e.message}`);
-    return { text: "I'm having a slight hitch. Could you repeat that? Asante.", escalationReason: null };
+    addLog('ERROR', `AI Error: ${e.message}`);
+    return { text: "Small technical hitch. Try again in a minute. Asante.", escalationReason: null };
   }
 }
 
-// --- 5. EVOLUTION PROXY ---
-async function callEvolution(endpoint, method, body, customConfig = null) {
-  const cfg = customConfig || evolutionConfig;
-  if (!cfg) return null;
-  let base = cfg.baseUrl.trim().replace(/\/$/, '');
-  if (!base.startsWith('http')) base = 'https://' + base;
-  const url = `${base}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-
+async function callEvolution(endpoint, method, body) {
+  if (!evolutionConfig) return null;
+  const url = `${evolutionConfig.baseUrl.replace(/\/$/, '')}${endpoint}`;
   try {
-    const res = await fetch(url, {
+    return await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json', 'apikey': cfg.apiKey.trim() },
+      headers: { 'Content-Type': 'application/json', 'apikey': evolutionConfig.apiKey },
       body: body ? JSON.stringify(body) : undefined
     });
-    return res;
-  } catch (e) {
-    addLog('ERROR', `Evolution Link Failure`, { url, error: e.message });
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
-// --- 6. ROUTES ---
-app.get('/api/data', (req, res) => res.json({ maintenance, issues, contacts, config: evolutionConfig }));
-app.get('/api/logs', (req, res) => res.json(webhookLogs.slice(0, 150)));
-app.post('/api/maintenance', (req, res) => { maintenance = req.body || []; res.json({ success: true }); });
-app.post('/api/issues', (req, res) => { issues = req.body || []; res.json({ success: true }); });
+app.get('/api/data', (req, res) => res.json({ maintenance, issues, config: evolutionConfig }));
+app.get('/api/logs', (req, res) => res.json(webhookLogs));
+app.post('/api/maintenance', (req, res) => { maintenance = req.body; res.json({ success: true }); });
+app.post('/api/issues', (req, res) => { issues = req.body; res.json({ success: true }); });
 app.post('/api/config', (req, res) => { evolutionConfig = req.body; res.json({ success: true }); });
 
 app.post('/api/ai/simulate', async (req, res) => {
-  const { history } = req.body;
-  // Trim history for simulator to save tokens
-  const trimmedHistory = (history || []).slice(-10);
-  const result = await generateAIResponse(trimmedHistory, maintenance);
+  const result = await generateAIResponse((req.body.history || []).slice(-6), maintenance);
   res.json(result);
 });
 
 app.get('/api/instance/status', async (req, res) => {
-  if (!evolutionConfig?.instanceName) return res.json({ status: 'NOT_CONFIGURED' });
-  const response = await callEvolution(`/instance/connectionState/${evolutionConfig.instanceName}`, 'GET');
-  if (response && response.ok) {
-    const data = await response.json();
-    const isConnected = ['open', 'connected'].includes(String(data?.instance?.state || data?.state).toLowerCase());
-    return res.json({ status: isConnected ? 'CONNECTED' : 'DISCONNECTED' });
+  if (!evolutionConfig) return res.json({ status: 'NOT_CONFIGURED' });
+  const resApi = await callEvolution(`/instance/connectionState/${evolutionConfig.instanceName}`, 'GET');
+  if (resApi?.ok) {
+    const d = await resApi.json();
+    return res.json({ status: ['open','connected'].includes(String(d.instance?.state || d.state).toLowerCase()) ? 'CONNECTED' : 'DISCONNECTED' });
   }
   res.json({ status: "ERROR" });
 });
 
-// --- 7. WEBHOOK KERNEL ---
-app.post(['/api/sync', '/webhook', '/api/webhook', '/sync', '/api/sync/messages-upsert', '/messages-upsert'], async (req, res) => {
-  let payload = req.body;
+app.post(['/api/sync', '/api/sync/messages-upsert'], async (req, res) => {
   res.status(200).send('ACK');
+  const data = req.body.data || req.body;
+  const msg = (data.messages ? data.messages[0] : data) || {};
+  if (!msg.key || msg.key.fromMe) return;
 
-  if (payload.body && typeof payload.body === 'string' && payload.body.includes('{')) {
-    try { payload = JSON.parse(payload.body); } catch (e) {}
-  }
+  const jid = msg.key.remoteJidAlt || msg.key.remoteJid;
+  const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.text || '';
+  if (!jid || !text || !evolutionConfig) return;
 
-  const eventName = payload.event || 'none';
-  const isMessageUpsert = eventName.toLowerCase().includes('upsert') || 
-                          (payload.data && payload.data.messages) ||
-                          (payload.messages);
+  addLog('WEBHOOK', `Message: "${text}"`);
 
-  if (!isMessageUpsert && !req.path.includes('sync')) return;
-
-  const data = payload.data || payload;
-  const messageObj = (data.messages ? data.messages[0] : data) || {};
-  if (!messageObj.key || messageObj.key.fromMe) return;
-
-  const jid = messageObj.key.remoteJidAlt || messageObj.key.remoteJid;
-  const content = messageObj.message || {};
-  const text = content.conversation || content.extendedTextMessage?.text || messageObj.text || '';
-
-  if (!jid || !text) return;
-
-  if (!evolutionConfig && payload.apikey && payload.server_url) {
-    evolutionConfig = { 
-      baseUrl: payload.server_url, 
-      apiKey: payload.apikey, 
-      instanceName: payload.instance || 'me' 
-    };
-    addLog('INFO', 'Evolution Bridge Confirmed');
-  }
-
-  if (!evolutionConfig) return;
-
-  addLog('WEBHOOK', `Message from ${jid.split('@')[0]}: "${text}"`);
-
-  // Token-Saving Memory (Limit to last 8 exchanges)
+  // Aggressive memory management (Last 4 exchanges to save tokens)
   if (!userMemory.has(jid)) userMemory.set(jid, []);
   const history = userMemory.get(jid);
   history.push({ role: 'user', content: text });
-  if (history.length > 16) history.shift(); // 16 entries = 8 exchanges
+  if (history.length > 8) history.shift(); 
 
   try {
     const target = jid.split('@')[0];
+    await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { number: target, presence: 'composing' });
     
-    await callEvolution(`/chat/sendPresence/${evolutionConfig.instanceName}`, 'POST', { 
-      number: target, 
-      presence: 'composing' 
-    });
-    
-    const { text: aiResponse, escalationReason } = await generateAIResponse(history, maintenance);
+    const { text: reply, escalationReason } = await generateAIResponse(history, maintenance);
     
     if (escalationReason) {
-      const newIssue = { 
-        id: Date.now().toString(), 
-        customerPhone: target, 
-        location: 'Auto-Detected', 
-        description: `${escalationReason}. Triggered by message: "${text}"`, 
-        severity: 'Warning', 
-        timestamp: new Date(), 
-        status: 'Pending' 
-      };
-      issues.unshift(newIssue);
-      if (issues.length > 500) issues.pop();
+      issues.unshift({ id: Date.now().toString(), customerPhone: target, location: 'Auto', description: escalationReason, severity: 'Warning', timestamp: new Date(), status: 'Pending' });
     }
 
-    history.push({ role: 'agent', content: aiResponse });
-
-    const result = await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { 
-      number: jid, 
-      text: aiResponse 
-    });
-
-    if (result && result.ok) {
-      addLog('SUCCESS', `Response Sent to ${target}`);
-    } else {
-      addLog('ERROR', 'Evolution API failed to send response.');
-    }
-  } catch (e) {
-    addLog('ERROR', `Webhook Processing Error: ${e.message}`);
-  }
+    history.push({ role: 'agent', content: reply });
+    await callEvolution(`/message/sendText/${evolutionConfig.instanceName}`, 'POST', { number: jid, text: reply });
+    addLog('SUCCESS', `Replied to ${target}`);
+  } catch (e) { addLog('ERROR', e.message); }
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
 
-app.listen(PORT, () => {
-  console.log(`EcoSpot AI Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`EcoSpot Lite AI active on ${PORT}`));
